@@ -37,14 +37,41 @@ fs.writeFileSync(path.join(out, 'index.html'), `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover,user-scalable=no"/>
-  <meta name="theme-color" content="#2563EB"/>
-  <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-title" content="Record Chief"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <meta http-equiv="Pragma" content="no-cache"/>
+  <meta http-equiv="Expires" content="0"/>
+
+  <!-- Viewport — fullscreen, no zoom -->
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,viewport-fit=cover,user-scalable=no"/>
+
+  <!-- PWA — makes Chrome show "Add to Home Screen" prompt -->
   <link rel="manifest" href="manifest.json"/>
+  <meta name="theme-color" content="#0A0F1E"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+
+  <!-- iOS Safari — fullscreen with no browser bar -->
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Record Chief"/>
   <link rel="apple-touch-icon" href="icons/icon-192.png"/>
+  <link rel="apple-touch-icon" sizes="152x152" href="icons/icon-192.png"/>
+  <link rel="apple-touch-icon" sizes="167x167" href="icons/icon-192.png"/>
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-192.png"/>
+  <link rel="apple-touch-startup-image" href="icons/icon-512.png"/>
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"/>
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png"/>
+
+  <!-- Social sharing -->
   <meta property="og:title" content="Record Chief"/>
   <meta property="og:description" content="Track shop sales, farm expenses and debt — built for Nigerian businesses."/>
+  <meta property="og:image" content="icons/icon-512.png"/>
+  <meta property="og:type" content="website"/>
+  <meta name="twitter:card" content="summary"/>
+  <meta name="twitter:title" content="Record Chief"/>
+  <meta name="twitter:description" content="Business records for Nigerian entrepreneurs"/>
+
   <title>Record Chief</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -75,7 +102,21 @@ fs.writeFileSync(path.join(out, 'index.html'), `<!DOCTYPE html>
   <script>
     var s=document.getElementById('splash');
     if(s){s.classList.add('done');setTimeout(function(){s.parentNode&&s.parentNode.removeChild(s)},600)}
-    if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
+    if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(reg => {
+          setInterval(() => reg.update(), 30000);
+          reg.addEventListener('updatefound', () => {
+            const w = reg.installing;
+            w.addEventListener('statechange', () => {
+              if (w.state === 'installed' && navigator.serviceWorker.controller) {
+                w.postMessage({ type: 'SKIP_WAITING' });
+              }
+            });
+          });
+        }).catch(() => {});
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!refreshing) { refreshing = true; window.location.reload(); }
+        });
   </script>
 </body>
 </html>`);

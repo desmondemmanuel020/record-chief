@@ -57,13 +57,23 @@ const css = `
     --amber-light: ${COLORS.amberLight};
   }
   [data-theme="dark"] {
-    --bg: #0F172A; --surface: #1E293B; --text: #F1F5F9;
-    --text-muted: #94A3B8; --text-light: #64748B;
-    --border: rgba(255,255,255,0.08); --primary: #60A5FA;
-    --primary-light: #1E3A5F; --accent: #34D399;
-    --accent-light: #0F2922; --danger: #F87171;
-    --danger-light: #2D1515; --amber: #FBBF24;
+    --bg: #0A0F1E;
+    --surface: #161D31;
+    --text: #F1F5F9;
+    --text-muted: #94A3B8;
+    --text-light: #4B5563;
+    --border: rgba(255,255,255,0.08);
+    --primary: #00C48C;
+    --primary-dark: #00A376;
+    --primary-light: #0A2419;
+    --accent: #00C48C;
+    --accent-light: #0A2419;
+    --danger: #F87171;
+    --danger-light: #2D1515;
+    --amber: #FBBF24;
     --amber-light: #2D2209;
+    --purple: #A78BFA;
+    --purple-light: #1E1535;
   }
   body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); transition: background 0.2s, color 0.2s; }
   input, select, textarea { font-family: 'Inter', sans-serif; }

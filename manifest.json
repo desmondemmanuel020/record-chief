@@ -1,29 +1,50 @@
 {
   "name": "Record Chief",
-  "short_name": "RecordChief",
+  "short_name": "Record Chief",
   "description": "Business records for Nigerian entrepreneurs — track sales, farm expenses, debt and credit.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#1E3A8A",
-  "theme_color": "#2563EB",
-  "orientation": "portrait",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#0A0F1E",
+  "theme_color": "#0A0F1E",
+  "orientation": "portrait-primary",
   "lang": "en-NG",
+  "dir": "ltr",
   "categories": ["business", "finance", "productivity"],
   "icons": [
+    {
+      "src": "icons/icon-32.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "any"
+    },
     {
       "src": "icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
+  "prefer_related_applications": false,
   "screenshots": [],
-  "related_applications": [],
-  "prefer_related_applications": false
+  "related_applications": []
 }
