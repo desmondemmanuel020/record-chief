@@ -72,6 +72,9 @@ fs.writeFileSync(path.join(out, 'index.html'), `<!DOCTYPE html>
   <meta name="twitter:title" content="Record Chief"/>
   <meta name="twitter:description" content="Business records for Nigerian entrepreneurs"/>
 
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap"/>
   <title>Record Chief</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -102,6 +105,11 @@ fs.writeFileSync(path.join(out, 'index.html'), `<!DOCTYPE html>
   <script>
     var s=document.getElementById('splash');
     if(s){s.classList.add('done');setTimeout(function(){s.parentNode&&s.parentNode.removeChild(s)},600)}
+    // Pre-cache fonts when online
+    if (navigator.onLine) {
+      fetch('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap')
+        .catch(() => {});
+    }
     if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(reg => {
           setInterval(() => reg.update(), 30000);
           reg.addEventListener('updatefound', () => {

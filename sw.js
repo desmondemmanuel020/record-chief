@@ -1,73 +1,120 @@
-// Record Chief Service Worker — Auto-update version
-// Change this version string every time you deploy
-const VERSION = "v" + "20260318";
+// Record Chief Service Worker
+const VERSION = "v20260319";
 const CACHE   = "recordchief-" + VERSION;
 
-const CDN = [
+// All resources to pre-cache on install
+const PRECACHE = [
+  "/",
+  "/index.html",
+  "/app.js",
+  "/manifest.json",
+  "/icons/icon-32.png",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
 ];
 
-// Install — cache CDN libs, skip waiting so new SW activates immediately
+// ── Install: pre-cache everything ──
 self.addEventListener("install", e => {
   e.waitUntil(
     caches.open(CACHE).then(c =>
-      Promise.allSettled(CDN.map(u => c.add(u).catch(() => {})))
-    )
+      Promise.allSettled(PRECACHE.map(url =>
+        c.add(url).catch(err => console.warn("Pre-cache failed:", url, err.message))
+      ))
+    ).then(() => self.skipWaiting())
   );
-  self.skipWaiting(); // activate immediately, don't wait for old tabs to close
 });
 
-// Activate — delete every old cache version, then take control
+// ── Activate: clean old caches, take control ──
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim()) // take control of all open tabs right now
+      .then(keys => Promise.all(
+        keys.filter(k => k !== CACHE).map(k => caches.delete(k))
+      ))
+      .then(() => self.clients.claim())
   );
 });
 
+// ── Fetch: smart caching strategy ──
 self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
   if (e.request.url.startsWith("chrome-extension")) return;
 
-  const url  = new URL(e.request.url);
-  const isCDN = url.hostname.includes("unpkg.com") ||
-                url.hostname.includes("cdnjs")      ||
-                url.hostname.includes("fonts.googleapis");
+  const url = new URL(e.request.url);
 
-  const isAppFile = url.pathname === "/" ||
-                    url.pathname.endsWith(".html") ||
-                    url.pathname.endsWith(".js")   ||
-                    url.pathname.endsWith(".json");
+  // Skip backend API calls — always go to network, don't cache
+  if (url.hostname.includes("railway.app") ||
+      url.pathname.startsWith("/api/")) {
+    return; // let browser handle naturally
+  }
+
+  const isCDN = url.hostname.includes("unpkg.com") ||
+                url.hostname.includes("cdnjs") ||
+                url.hostname.includes("fonts.googleapis") ||
+                url.hostname.includes("fonts.gstatic");
+
+  const isAppFile = url.hostname === self.location.hostname && (
+    url.pathname === "/" ||
+    url.pathname.endsWith(".html") ||
+    url.pathname.endsWith(".js") ||
+    url.pathname.endsWith(".json") ||
+    url.pathname.startsWith("/icons/")
+  );
 
   if (isCDN) {
-    // CDN: cache-first (React/fonts never change)
+    // Cache-first for CDN — never changes
     e.respondWith(
-      caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
-        if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
-        return res;
-      }))
+      caches.match(e.request).then(hit => {
+        if (hit) return hit;
+        return fetch(e.request).then(res => {
+          if (res && res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        }).catch(() => caches.match(e.request));
+      })
     );
   } else if (isAppFile) {
-    // App files: network-first so updates always show
+    // Stale-while-revalidate for app files:
+    // Serve from cache immediately (fast), update cache in background
     e.respondWith(
-      fetch(e.request)
-        .then(res => {
-          if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
-          return res;
+      caches.open(CACHE).then(cache =>
+        cache.match(e.request).then(cached => {
+          const networkFetch = fetch(e.request).then(res => {
+            if (res && res.ok) cache.put(e.request, res.clone());
+            return res;
+          }).catch(() => null);
+
+          // Return cached immediately if available, otherwise wait for network
+          return cached || networkFetch;
         })
-        .catch(() => caches.match(e.request)) // offline fallback
+      )
     );
   } else {
     // Everything else: network with cache fallback
     e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
+      fetch(e.request)
+        .then(res => {
+          if (res && res.ok && res.type !== "opaque") {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        })
+        .catch(() => {
+          if (e.request.mode === "navigate") {
+            return caches.match("/index.html");
+          }
+          return caches.match(e.request);
+        })
     );
   }
 });
 
-// Listen for SKIP_WAITING message from the page
-self.addEventListener('message', e => {
-  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
+// ── Message handler ──
+self.addEventListener("message", e => {
+  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
 });
