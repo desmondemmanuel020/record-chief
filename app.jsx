@@ -4972,11 +4972,26 @@ function App() {
   const handleAuth = (u, sectors) => {
     const fullUser = { ...u, sectors: sectors || u.sectors || ["shop"] };
     setUser(fullUser);
+    // Cache session with latest sectors immediately
+    localStorage.setItem("rc_session", JSON.stringify(fullUser));
     if (sectors && sectors.length > 0) setSector(sectors[0]);
     setScreen("app");
     setNavTab("home");
     if (!showOnboarding) { setShowOnboarding(false); }
-    // Pull latest data from server (non-blocking)
+    // Pull latest data from server — also refresh profile to get latest sectors
+    const token = localStorage.getItem("rc_token");
+    if (token) {
+      fetch(`${API_URL}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.user) {
+            const fresh = { ...data.user, uid: data.user._id };
+            setUser(fresh);
+            localStorage.setItem("rc_session", JSON.stringify(fresh));
+          }
+        }).catch(() => {});
+    }
     AuthAPI.syncFromServer(fullUser.uid || fullUser._id).catch(() => {});
   };
 
@@ -4988,12 +5003,25 @@ function App() {
 
   const handleManageSectors = () => setNavTab("manageSectors");
 
-  const handleSaveSectors = (newSectors) => {
+  const handleSaveSectors = async (newSectors) => {
     const updated = { ...user, sectors: newSectors };
     setUser(updated);
+    // Update cached session so sectors persist offline
+    localStorage.setItem("rc_session", JSON.stringify(updated));
     // if current active sector was removed, switch to first available
     if (!newSectors.includes(sector)) setSector(newSectors[0]);
     setNavTab("home");
+    // Save sectors to backend so they persist after logout/login
+    const token = localStorage.getItem("rc_token");
+    if (token) {
+      try {
+        await fetch(`${API_URL}/api/auth/profile`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ sectors: newSectors }),
+        });
+      } catch(e) { /* silent — localStorage is already updated */ }
+    }
   };
 
   if (screen === "welcome") return (<><style>{css}</style><WelcomeScreen onNavigate={setScreen} /></>);
