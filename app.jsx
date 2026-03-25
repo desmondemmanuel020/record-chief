@@ -723,30 +723,62 @@ const AuthAPI = {
     }
   },
 
+  // Simple hash for offline password verification (not cryptographic — just a fingerprint)
+  _hashPw(pw) {
+    let h = 0;
+    for (let i = 0; i < pw.length; i++) { h = (Math.imul(31, h) + pw.charCodeAt(i)) | 0; }
+    return h.toString(36);
+  },
+
   async signIn({ email, password }) {
     try {
-      const res  = await fetch(`${API_URL}/api/auth/login`, {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined,
       });
       const data = await res.json();
       if (!res.ok) return { ok: false, error: data.error || "Login failed." };
       const user = { ...data.user, uid: data.user._id };
       localStorage.setItem("rc_token", data.token);
-      localStorage.setItem("rc_session", JSON.stringify(user)); // cache for offline
+      localStorage.setItem("rc_session", JSON.stringify(user));
+      // Store email + hashed pw for offline login verification
+      const offlineKey = `rc_offline_${email.trim().toLowerCase()}`;
+      localStorage.setItem(offlineKey, JSON.stringify({ hash: AuthAPI._hashPw(password), uid: user.uid }));
       return { ok: true, user };
     } catch(e) {
-      // Offline fallback — try cached session
-      const cached = localStorage.getItem("rc_session");
-      const token  = localStorage.getItem("rc_token");
-      if (cached && token) {
-        const user = JSON.parse(cached);
-        if (user.email?.toLowerCase() === email.toLowerCase()) {
-          return { ok: true, user, offline: true };
-        }
+      // ── Offline fallback ──
+      const emailKey   = email.trim().toLowerCase();
+      const offlineRec = (() => { try { return JSON.parse(localStorage.getItem(`rc_offline_${emailKey}`)); } catch { return null; } })();
+      const session    = (() => { try { return JSON.parse(localStorage.getItem("rc_session")); } catch { return null; } })();
+      const token      = localStorage.getItem("rc_token");
+
+      if (!offlineRec || !session || !token) {
+        return { ok: false, error: "You need internet to log in for the first time. Please connect and try again." };
       }
-      return { ok: false, error: "Network error. Check your connection and try again." };
+
+      // Verify email matches cached session
+      if (session.email?.toLowerCase() !== emailKey) {
+        return { ok: false, error: "Incorrect email or password." };
+      }
+
+      // Verify password hash
+      if (offlineRec.hash !== AuthAPI._hashPw(password)) {
+        return { ok: false, error: "Incorrect password." };
+      }
+
+      // Verify JWT not expired
+      try {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        if (payload.exp * 1000 < Date.now()) {
+          return { ok: false, error: "Your session has expired. Please connect to the internet and log in again." };
+        }
+      } catch(ex) {
+        return { ok: false, error: "Session error. Please connect and log in again." };
+      }
+
+      return { ok: true, user: session, offline: true };
     }
   },
 
@@ -754,6 +786,7 @@ const AuthAPI = {
     localStorage.removeItem("rc_token");
     localStorage.removeItem("rc_session");
     localStorage.removeItem("sl_user");
+    // Note: we keep rc_offline_* keys so user can still log back in offline
   },
 
   async resetPassword(email) {
@@ -825,6 +858,12 @@ function SignupScreen({ onAuth, onNavigate }) {
   const [loading, setLoading] = useState(false);
   const [selectedSectors, setSelectedSectors] = useState([]);
   const [sectorError, setSectorError] = useState("");
+  const [signedUpUser, setSignedUpUser]   = useState(null);
+  const [otpCode, setOtpCode]             = useState("");
+  const [otpError, setOtpError]           = useState("");
+  const [otpSending, setOtpSending]       = useState(false);
+  const [otpChannel, setOtpChannel]       = useState("sms");
+  const [otpSent, setOtpSent]             = useState(false);
 
   const setField = (field, val) => { setForm(p => ({ ...p, [field]: val })); setErrors(p => ({ ...p, [field]: null })); };
 
@@ -864,12 +903,119 @@ function SignupScreen({ onAuth, onNavigate }) {
       });
       if (!result.ok) { setErrors({ email: result.error }); setLoading(false); return; }
       if (result.message) alert(result.message);
-      onAuth(result.user, selectedSectors);
+      setSignedUpUser(result.user);
+      setStep(3); // go to phone verification
+      setLoading(false);
+      // Auto-send OTP via SMS
+      sendOTP("sms", result.user);
     } catch(e) {
       setErrors({ email: e.message || "Sign up failed. Please try again." });
       setLoading(false);
     }
   };
+
+  const sendOTP = async (channel = "sms", userOverride = null) => {
+    const u = userOverride || signedUpUser;
+    if (!u) return;
+    setOtpSending(true); setOtpError(""); setOtpChannel(channel);
+    const token = localStorage.getItem("rc_token");
+    try {
+      const res  = await fetch(`${API_URL}/api/otp/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ channel }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setOtpError(data.error || "Failed to send OTP"); }
+      else { setOtpSent(true); }
+    } catch(e) {
+      setOtpError("Network error. Check your connection.");
+    }
+    setOtpSending(false);
+  };
+
+  const verifyOTP = async () => {
+    if (!otpCode.trim() || otpCode.length < 4) { setOtpError("Enter the 6-digit code"); return; }
+    setLoading(true); setOtpError("");
+    const token = localStorage.getItem("rc_token");
+    try {
+      const res  = await fetch(`${API_URL}/api/otp/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ otp: otpCode.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setOtpError(data.error || "Incorrect code"); setLoading(false); return; }
+      // Verified — proceed into app
+      onAuth({ ...signedUpUser, phoneVerified: true }, signedUpUser.sectors || selectedSectors);
+    } catch(e) {
+      setOtpError("Network error."); setLoading(false);
+    }
+  };
+
+  const skipVerification = () => {
+    onAuth(signedUpUser, signedUpUser.sectors || selectedSectors);
+  };
+
+  // ── Step 3: Phone OTP Verification ──
+  if (step === 3) return (
+    <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "3rem" }}>
+      <div className="auth-card">
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>📱</div>
+          <div className="auth-title" style={{ marginBottom: 6 }}>Verify your phone</div>
+          <div className="auth-sub">
+            We sent a 6-digit code to <strong>{signedUpUser?.phone}</strong> via {otpChannel === "whatsapp" ? "WhatsApp" : "SMS"}.
+          </div>
+        </div>
+
+        {otpSent && (
+          <div style={{ background: COLORS.accentLight, borderRadius: 10, padding: "10px 12px", fontSize: 13, color: COLORS.accent, marginBottom: 14, textAlign: "center" }}>
+            ✅ Code sent! Check your {otpChannel === "whatsapp" ? "WhatsApp" : "SMS messages"}.
+          </div>
+        )}
+
+        {/* OTP input */}
+        <div className="form-group">
+          <label className="form-label">Enter 6-digit code</label>
+          <input
+            className="form-input"
+            type="number"
+            placeholder="123456"
+            maxLength={6}
+            value={otpCode}
+            onChange={e => { setOtpCode(e.target.value.slice(0,6)); setOtpError(""); }}
+            style={{ textAlign: "center", fontSize: 24, fontFamily: "'Space Mono', monospace", letterSpacing: 8, fontWeight: 700 }}
+            autoFocus
+          />
+        </div>
+
+        {otpError && <div style={{ color: COLORS.danger, fontSize: 13, marginBottom: 10, textAlign: "center" }}>{otpError}</div>}
+
+        <button className="btn btn-primary" onClick={verifyOTP} disabled={loading} style={{ marginBottom: 10 }}>
+          {loading ? "Verifying…" : "Verify Phone Number"}
+        </button>
+
+        {/* Resend options */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <button
+            onClick={() => sendOTP("sms")} disabled={otpSending}
+            style={{ flex: 1, background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "9px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", color: COLORS.text }}>
+            {otpSending && otpChannel === "sms" ? "Sending…" : "📩 Resend SMS"}
+          </button>
+          <button
+            onClick={() => sendOTP("whatsapp")} disabled={otpSending}
+            style={{ flex: 1, background: "#25D366", border: "none", borderRadius: 9, padding: "9px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", color: "#fff" }}>
+            {otpSending && otpChannel === "whatsapp" ? "Sending…" : "💬 Send via WhatsApp"}
+          </button>
+        </div>
+
+        <button onClick={skipVerification} style={{ width: "100%", background: "none", border: "none", color: COLORS.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: "8px" }}>
+          Skip for now →
+        </button>
+      </div>
+    </div>
+  );
 
   if (step === 2) return (
     <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "2.5rem" }}>
@@ -1020,6 +1166,10 @@ function LoginScreen({ onAuth, onNavigate }) {
     try {
       const result = await AuthAPI.signIn({ email: form.email.trim(), password: form.password });
       if (!result.ok) { setLoading(false); setError(result.error || "Login failed. Please try again."); return; }
+      if (result.offline) {
+        // Show brief offline notice but still log them in
+        setError(""); // clear any error
+      }
       onAuth(result.user, result.user.sectors);
     } catch(e) {
       setLoading(false); setError(e.message || "Login failed. Please try again.");
@@ -1749,31 +1899,57 @@ function SalesRepScreen({ user }) {
   );
 }
 
-function RestockRow({ itemId, onRestock, onRemove }) {
-  const [qty, setQty] = useState("");
-  const [open, setOpen] = useState(false);
-  const add = () => {
+function RestockRow({ itemId, onRestock, onRemove, onUpdatePrice, currentPrice }) {
+  const [qty, setQty]       = useState("");
+  const [mode, setMode]     = useState(null); // null | "restock" | "price"
+  const [newPrice, setNewPrice] = useState("");
+
+  const addStock = () => {
     const q = parseInt(qty);
     if (!q || q <= 0) return;
     onRestock(itemId, q);
-    setQty("");
-    setOpen(false);
+    setQty(""); setMode(null);
   };
+
+  const savePrice = () => {
+    const p = parseFloat(newPrice);
+    if (!p || p <= 0) return;
+    onUpdatePrice(itemId, p);
+    setNewPrice(""); setMode(null);
+  };
+
   return (
     <div style={{ marginTop: 8 }}>
-      {open ? (
+      {mode === "restock" ? (
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <input type="number" className="form-input" placeholder="Qty to add" min="1" value={qty}
             onChange={e => setQty(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && add()}
-            style={{ flex: 1, padding: "7px 10px", fontSize: 13 }} />
-          <button className="btn btn-success btn-sm" onClick={add} style={{ whiteSpace: "nowrap" }}>Add</button>
-          <button className="btn btn-outline btn-sm" onClick={() => { setOpen(false); setQty(""); }}>✕</button>
+            onKeyDown={e => e.key === "Enter" && addStock()}
+            style={{ flex: 1, padding: "7px 10px", fontSize: 13 }} autoFocus />
+          <button className="btn btn-success btn-sm" onClick={addStock} style={{ whiteSpace: "nowrap" }}>Add</button>
+          <button className="btn btn-outline btn-sm" onClick={() => { setMode(null); setQty(""); }}>✕</button>
+        </div>
+      ) : mode === "price" ? (
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <div style={{ position: "relative", flex: 1 }}>
+            <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: COLORS.textMuted, fontSize: 13, fontWeight: 600 }}>₦</span>
+            <input type="number" className="form-input" placeholder={currentPrice} min="1" value={newPrice}
+              onChange={e => setNewPrice(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && savePrice()}
+              style={{ paddingLeft: 22, padding: "7px 10px 7px 22px", fontSize: 13 }} autoFocus />
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={savePrice} style={{ whiteSpace: "nowrap" }}>Save</button>
+          <button className="btn btn-outline btn-sm" onClick={() => { setMode(null); setNewPrice(""); }}>✕</button>
         </div>
       ) : (
         <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn btn-success btn-sm" style={{ flex: 1, fontSize: 12 }} onClick={() => setOpen(true)}>
+          <button className="btn btn-success btn-sm" style={{ flex: 2, fontSize: 12 }} onClick={() => setMode("restock")}>
             <Icon name="plus" size={13} /> Restock
+          </button>
+          <button
+            onClick={() => { setNewPrice(String(currentPrice)); setMode("price"); }}
+            style={{ flex: 2, background: COLORS.amberLight, border: `1px solid #FCD34D`, borderRadius: 8, padding: "5px 8px", fontSize: 11, fontWeight: 700, color: COLORS.amber, cursor: "pointer", fontFamily: "'Inter', sans-serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+            ✏️ Price
           </button>
           <button className="btn btn-danger btn-sm" onClick={() => onRemove(itemId)}><Icon name="trash" size={13} /></button>
         </div>
@@ -1850,6 +2026,7 @@ function ShopScreen({ user }) {
   const deleteSale = (id) => { setSales(prev => prev.map(s => s.id === id ? {...s, archived: true} : s)); showToast("Sale moved to archive", "error"); };
   const restoreSale = (id) => { setSales(prev => prev.map(s => s.id === id ? {...s, archived: false} : s)); showToast("Sale restored!"); };
   const addStock = (id, qty) => { setInventory(prev => prev.map(i => i.id === id ? { ...i, stock: i.stock + qty } : i)); showToast("Stock updated!"); };
+  const updatePrice = (id, price) => { setInventory(prev => prev.map(i => i.id === id ? { ...i, price } : i)); showToast("Price updated!"); };
 
   const filteredSales = sales.filter(s => !search || s.itemName.toLowerCase().includes(search.toLowerCase()));
 
@@ -2229,7 +2406,7 @@ function ShopScreen({ user }) {
                           <div style={{ height: "100%", borderRadius: 3, background: stockColor, width: `${Math.min(100, (item.stock / Math.max(item.stock, 20)) * 100)}%`, transition: "width 0.3s" }} />
                         </div>
                       </div>
-                      <RestockRow itemId={item.id} onRestock={addStock} onRemove={removeItem} />
+                      <RestockRow itemId={item.id} onRestock={addStock} onRemove={removeItem} onUpdatePrice={updatePrice} currentPrice={item.price} />
                     </div>
                   </div>
                 );
@@ -4315,6 +4492,141 @@ function GuideTourModal({ onClose }) {
   );
 }
 
+
+// ===================== STAFF INVITE SECTION =====================
+function StaffInviteSection({ user }) {
+  const [email, setEmail]       = useState("");
+  const [invites, setInvites]   = useState([]);
+  const [loading, setLoading]   = useState(false);
+  const [fetching, setFetching] = useState(true);
+  const [msg, setMsg]           = useState({ text: "", ok: true });
+  const token = localStorage.getItem("rc_token");
+
+  // Load existing invites
+  useEffect(() => {
+    if (!token) { setFetching(false); return; }
+    fetch(`${API_URL}/api/invite`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(d => { setInvites(d.invites || []); setFetching(false); })
+      .catch(() => setFetching(false));
+  }, []);
+
+  const sendInvite = async () => {
+    if (!email.trim() || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
+      setMsg({ text: "Enter a valid email address", ok: false }); return;
+    }
+    setLoading(true); setMsg({ text: "", ok: true });
+    try {
+      const res  = await fetch(`${API_URL}/api/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setMsg({ text: data.error || "Failed to send invite", ok: false }); }
+      else {
+        setInvites(prev => [data.invite, ...prev]);
+        setEmail("");
+        setMsg({ text: "Invite sent! They will receive an email with a link to join.", ok: true });
+      }
+    } catch(e) {
+      setMsg({ text: "Network error. Try again.", ok: false });
+    }
+    setLoading(false);
+  };
+
+  const revokeInvite = async (inviteId) => {
+    if (!window.confirm("Remove this person's access?")) return;
+    try {
+      await fetch(`${API_URL}/api/invite/${inviteId}`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+      });
+      setInvites(prev => prev.filter(i => i._id !== inviteId));
+    } catch(e) {}
+  };
+
+  if (user.role === "staff") {
+    return (
+      <div className="card" style={{ marginBottom: "0.75rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>Staff Account</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>
+              You are viewing and editing your employer's business records.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: "0.75rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+        <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>Invite Staff</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>Give a partner or employee access to your records</div>
+        </div>
+      </div>
+
+      {/* Existing invites */}
+      {fetching ? (
+        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 12 }}>Loading...</div>
+      ) : invites.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          {invites.map(inv => (
+            <div key={inv._id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `0.5px solid ${COLORS.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 32, height: 32, borderRadius: "50%", background: inv.status === "accepted" ? COLORS.accentLight : COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: inv.status === "accepted" ? COLORS.accent : COLORS.primary }}>
+                  {(inv.staffName || inv.email)[0].toUpperCase()}
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>{inv.staffName || inv.email}</div>
+                  <div style={{ fontSize: 11, color: inv.status === "accepted" ? COLORS.accent : COLORS.amber, marginTop: 1 }}>
+                    {inv.status === "accepted" ? "✅ Active" : inv.status === "revoked" ? "❌ Revoked" : "⏳ Invite pending"}
+                  </div>
+                </div>
+              </div>
+              {inv.status !== "revoked" && (
+                <button onClick={() => revokeInvite(inv._id)} style={{ background: COLORS.dangerLight, border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 11, fontWeight: 700, borderRadius: 7, padding: "5px 10px", fontFamily: "'Inter', sans-serif" }}>
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Invite input */}
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          className="form-input" style={{ flex: 1 }}
+          placeholder="staff@email.com"
+          value={email}
+          onChange={e => { setEmail(e.target.value); setMsg({ text: "", ok: true }); }}
+          onKeyDown={e => e.key === "Enter" && sendInvite()}
+          type="email"
+        />
+        <button className="btn btn-primary" onClick={sendInvite} disabled={loading}
+          style={{ flexShrink: 0, width: "auto", padding: "0 16px" }}>
+          {loading ? "..." : "Invite"}
+        </button>
+      </div>
+      {msg.text && (
+        <div style={{ fontSize: 12, marginTop: 8, color: msg.ok ? COLORS.accent : COLORS.danger, lineHeight: 1.5 }}>
+          {msg.text}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, padding: "10px 12px", background: COLORS.primaryLight, borderRadius: 10, fontSize: 12, color: COLORS.primary, lineHeight: 1.6 }}>
+        💡 Invited staff will receive an email, sign up with their own account, and immediately see your business records. You can remove their access anytime.
+      </div>
+    </div>
+  );
+}
+
 function ProfileScreen({ user, onLogout, onManageSectors }) {
   const avatarKey = `sl_avatar_${user.uid}`;
   const [editing, setEditing] = useState(false);
@@ -4364,7 +4676,13 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
         </div>
         <div style={{ fontSize: 20, fontWeight: 700, marginTop: 6 }}>{user.name}</div>
         <div style={{ fontSize: 13, color: COLORS.textMuted }}>{user.email}</div>
-        <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 3 }}>{user.phone}</div>
+        <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 3, display: "flex", alignItems: "center", gap: 5 }}>
+          {user.phone}
+          {user.phoneVerified
+            ? <span style={{ fontSize: 9, background: COLORS.accentLight, color: COLORS.accent, borderRadius: 5, padding: "1px 5px", fontWeight: 700 }}>✅</span>
+            : <span style={{ fontSize: 9, background: COLORS.amberLight, color: COLORS.amber, borderRadius: 5, padding: "1px 5px", fontWeight: 700 }}>Unverified</span>
+          }
+        </div>
       </div>
 
       <div className="card">
@@ -4410,61 +4728,7 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
       </div>
 
       <div className="section-title">Sharing & Collaboration</div>
-      <div className="card" style={{ marginBottom: "0.75rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>Share Business Access</div>
-            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>Invite a partner or accountant to view your records</div>
-          </div>
-        </div>
-        {(() => {
-          const shareKey = `sl_share_${user.uid}`;
-          // eslint-disable-next-line react-hooks/rules-of-hooks
-          const [shareEmail, setShareEmail] = useState("");
-          // eslint-disable-next-line react-hooks/rules-of-hooks
-          const [shared, setShared] = useState(() => { try { return JSON.parse(localStorage.getItem(shareKey)) || []; } catch { return []; } });
-          // eslint-disable-next-line react-hooks/rules-of-hooks
-          const [shareToast, setShareToast] = useState("");
-          const addShare = () => {
-            const e = shareEmail.trim().toLowerCase();
-            if (!e || !/^[^@]+@[^@]+\.[^@]+$/.test(e)) { setShareToast("Enter a valid email"); return; }
-            if (shared.includes(e)) { setShareToast("Already shared with this person"); return; }
-            const next = [...shared, e];
-            setShared(next);
-            try { localStorage.setItem(shareKey, JSON.stringify(next)); } catch {}
-            setShareEmail("");
-            setShareToast("Invite sent! (They can log in to view your data)");
-          };
-          const removeShare = (em) => {
-            const next = shared.filter(x => x !== em);
-            setShared(next);
-            try { localStorage.setItem(shareKey, JSON.stringify(next)); } catch {}
-          };
-          return (
-            <>
-              {shared.length > 0 && (
-                <div style={{ marginBottom: 10 }}>
-                  {shared.map(em => (
-                    <div key={em} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: `0.5px solid ${COLORS.border}` }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: COLORS.primary }}>{em[0].toUpperCase()}</div>
-                        <span style={{ fontSize: 13, color: COLORS.text }}>{em}</span>
-                      </div>
-                      <button onClick={() => removeShare(em)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 11, fontFamily: "'Inter', sans-serif" }}>Remove</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 8 }}>
-                <input className="form-input" style={{ flex: 1 }} placeholder="partner@email.com" value={shareEmail} onChange={e => setShareEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && addShare()} />
-                <button className="btn btn-primary btn-sm" onClick={addShare} style={{ flexShrink: 0, width: "auto", padding: "0 16px" }}>Invite</button>
-              </div>
-              {shareToast && <div style={{ fontSize: 12, marginTop: 6, color: shareToast.startsWith("Invite") ? COLORS.accent : COLORS.danger }}>{shareToast}</div>}
-            </>
-          );
-        })()}
-      </div>
+      <StaffInviteSection user={user} />
 
       <div className="section-title">Privacy & Security</div>
       <div className="card" style={{ marginBottom: "0.75rem" }}>
@@ -4936,8 +5200,38 @@ function App() {
   const [avatar] = useLocalState(avatarKey || "sl_avatar_none", null);
 
   useEffect(() => {
+    // Check for invite token in URL
+    const params = new URLSearchParams(window.location.search);
+    const inviteToken = params.get("invite");
+    if (inviteToken) {
+      localStorage.setItem("rc_pending_invite", inviteToken);
+      // Clean URL
+      window.history.replaceState({}, "", "/");
+    }
+
     if (user) {
       setScreen("app");
+      // If there's a pending invite, accept it now
+      const pendingInvite = localStorage.getItem("rc_pending_invite");
+      if (pendingInvite) {
+        const jwt = localStorage.getItem("rc_token");
+        if (jwt) {
+          fetch(`${API_URL}/api/invite/accept/${pendingInvite}`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${jwt}` },
+          }).then(r => r.json()).then(data => {
+            if (data.message) {
+              localStorage.removeItem("rc_pending_invite");
+              alert("You now have access to the business records!");
+              // Sync owner's data to localStorage
+              if (data.ownerData) {
+                const uid = user.uid || user._id;
+                // Will be handled by next syncFromServer call
+              }
+            }
+          }).catch(() => {});
+        }
+      }
     } else {
       // Try to restore session from cache (works offline)
       const token   = localStorage.getItem("rc_token");
