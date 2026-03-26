@@ -858,12 +858,6 @@ function SignupScreen({ onAuth, onNavigate }) {
   const [loading, setLoading] = useState(false);
   const [selectedSectors, setSelectedSectors] = useState([]);
   const [sectorError, setSectorError] = useState("");
-  const [signedUpUser, setSignedUpUser]   = useState(null);
-  const [otpCode, setOtpCode]             = useState("");
-  const [otpError, setOtpError]           = useState("");
-  const [otpSending, setOtpSending]       = useState(false);
-  const [otpChannel, setOtpChannel]       = useState("sms");
-  const [otpSent, setOtpSent]             = useState(false);
 
   const setField = (field, val) => { setForm(p => ({ ...p, [field]: val })); setErrors(p => ({ ...p, [field]: null })); };
 
@@ -903,119 +897,12 @@ function SignupScreen({ onAuth, onNavigate }) {
       });
       if (!result.ok) { setErrors({ email: result.error }); setLoading(false); return; }
       if (result.message) alert(result.message);
-      setSignedUpUser(result.user);
-      setStep(3); // go to phone verification
-      setLoading(false);
-      // Auto-send OTP via SMS
-      sendOTP("sms", result.user);
+      onAuth(result.user, selectedSectors);
     } catch(e) {
       setErrors({ email: e.message || "Sign up failed. Please try again." });
       setLoading(false);
     }
   };
-
-  const sendOTP = async (channel = "sms", userOverride = null) => {
-    const u = userOverride || signedUpUser;
-    if (!u) return;
-    setOtpSending(true); setOtpError(""); setOtpChannel(channel);
-    const token = localStorage.getItem("rc_token");
-    try {
-      const res  = await fetch(`${API_URL}/api/otp/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ channel }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setOtpError(data.error || "Failed to send OTP"); }
-      else { setOtpSent(true); }
-    } catch(e) {
-      setOtpError("Network error. Check your connection.");
-    }
-    setOtpSending(false);
-  };
-
-  const verifyOTP = async () => {
-    if (!otpCode.trim() || otpCode.length < 4) { setOtpError("Enter the 6-digit code"); return; }
-    setLoading(true); setOtpError("");
-    const token = localStorage.getItem("rc_token");
-    try {
-      const res  = await fetch(`${API_URL}/api/otp/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ otp: otpCode.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setOtpError(data.error || "Incorrect code"); setLoading(false); return; }
-      // Verified — proceed into app
-      onAuth({ ...signedUpUser, phoneVerified: true }, signedUpUser.sectors || selectedSectors);
-    } catch(e) {
-      setOtpError("Network error."); setLoading(false);
-    }
-  };
-
-  const skipVerification = () => {
-    onAuth(signedUpUser, signedUpUser.sectors || selectedSectors);
-  };
-
-  // ── Step 3: Phone OTP Verification ──
-  if (step === 3) return (
-    <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "3rem" }}>
-      <div className="auth-card">
-        <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 48, marginBottom: 12 }}>📱</div>
-          <div className="auth-title" style={{ marginBottom: 6 }}>Verify your phone</div>
-          <div className="auth-sub">
-            We sent a 6-digit code to <strong>{signedUpUser?.phone}</strong> via {otpChannel === "whatsapp" ? "WhatsApp" : "SMS"}.
-          </div>
-        </div>
-
-        {otpSent && (
-          <div style={{ background: COLORS.accentLight, borderRadius: 10, padding: "10px 12px", fontSize: 13, color: COLORS.accent, marginBottom: 14, textAlign: "center" }}>
-            ✅ Code sent! Check your {otpChannel === "whatsapp" ? "WhatsApp" : "SMS messages"}.
-          </div>
-        )}
-
-        {/* OTP input */}
-        <div className="form-group">
-          <label className="form-label">Enter 6-digit code</label>
-          <input
-            className="form-input"
-            type="number"
-            placeholder="123456"
-            maxLength={6}
-            value={otpCode}
-            onChange={e => { setOtpCode(e.target.value.slice(0,6)); setOtpError(""); }}
-            style={{ textAlign: "center", fontSize: 24, fontFamily: "'Space Mono', monospace", letterSpacing: 8, fontWeight: 700 }}
-            autoFocus
-          />
-        </div>
-
-        {otpError && <div style={{ color: COLORS.danger, fontSize: 13, marginBottom: 10, textAlign: "center" }}>{otpError}</div>}
-
-        <button className="btn btn-primary" onClick={verifyOTP} disabled={loading} style={{ marginBottom: 10 }}>
-          {loading ? "Verifying…" : "Verify Phone Number"}
-        </button>
-
-        {/* Resend options */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <button
-            onClick={() => sendOTP("sms")} disabled={otpSending}
-            style={{ flex: 1, background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "9px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", color: COLORS.text }}>
-            {otpSending && otpChannel === "sms" ? "Sending…" : "📩 Resend SMS"}
-          </button>
-          <button
-            onClick={() => sendOTP("whatsapp")} disabled={otpSending}
-            style={{ flex: 1, background: "#25D366", border: "none", borderRadius: 9, padding: "9px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", color: "#fff" }}>
-            {otpSending && otpChannel === "whatsapp" ? "Sending…" : "💬 Send via WhatsApp"}
-          </button>
-        </div>
-
-        <button onClick={skipVerification} style={{ width: "100%", background: "none", border: "none", color: COLORS.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: "8px" }}>
-          Skip for now →
-        </button>
-      </div>
-    </div>
-  );
 
   if (step === 2) return (
     <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "2.5rem" }}>
@@ -4627,6 +4514,108 @@ function StaffInviteSection({ user }) {
   );
 }
 
+
+// ===================== EMAIL VERIFY SECTION =====================
+function EmailVerifySection({ user, onVerified }) {
+  const [otp, setOtp]         = useState("");
+  const [sent, setSent]       = useState(false);
+  const [sending, setSending] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [error, setError]     = useState("");
+  const [success, setSuccess] = useState(false);
+  const token = localStorage.getItem("rc_token");
+
+  const sendCode = async () => {
+    setSending(true); setError(""); setSent(false);
+    try {
+      const res  = await fetch(`${API_URL}/api/otp/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) setError(data.error || "Failed to send code.");
+      else { setSent(true); setOtp(""); }
+    } catch(e) { setError("Network error. Check your connection."); }
+    setSending(false);
+  };
+
+  const verifyCode = async () => {
+    if (!otp.trim()) { setError("Enter the code from your email"); return; }
+    setVerifying(true); setError("");
+    try {
+      const res  = await fetch(`${API_URL}/api/otp/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ otp: otp.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || "Incorrect code."); }
+      else {
+        setSuccess(true);
+        if (onVerified) onVerified();
+      }
+    } catch(e) { setError("Network error."); }
+    setVerifying(false);
+  };
+
+  if (user.emailVerified || success) {
+    return (
+      <div style={{ background: COLORS.accentLight, border: `1px solid #6EE7B7`, borderRadius: 14, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, marginBottom: "0.75rem" }}>
+        <div style={{ fontSize: 24 }}>✅</div>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.accent }}>Email Verified</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>{user.email} is verified</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: COLORS.amberLight, border: `1px solid #FCD34D`, borderRadius: 14, padding: "16px", marginBottom: "0.75rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 22 }}>📧</div>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.amber }}>Email not verified</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>Verify your email to secure your account</div>
+        </div>
+      </div>
+
+      {sent ? (
+        <>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginBottom: 10, background: COLORS.accentLight, borderRadius: 8, padding: "8px 10px" }}>
+            ✅ Code sent to <strong>{user.email}</strong>. Check your inbox (and spam folder).
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input
+              className="form-input"
+              type="number"
+              placeholder="Enter 6-digit code"
+              value={otp}
+              maxLength={6}
+              onChange={e => { setOtp(e.target.value.slice(0,6)); setError(""); }}
+              onKeyDown={e => e.key === "Enter" && verifyCode()}
+              style={{ flex: 1, textAlign: "center", fontFamily: "'Space Mono', monospace", fontSize: 18, fontWeight: 700, letterSpacing: 6 }}
+              autoFocus
+            />
+            <button className="btn btn-primary btn-sm" onClick={verifyCode} disabled={verifying} style={{ flexShrink: 0, padding: "0 14px" }}>
+              {verifying ? "…" : "Verify"}
+            </button>
+          </div>
+          <button onClick={sendCode} disabled={sending} style={{ background: "none", border: "none", color: COLORS.primary, fontSize: 12, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 0 }}>
+            {sending ? "Sending…" : "Resend code"}
+          </button>
+        </>
+      ) : (
+        <button className="btn btn-primary" onClick={sendCode} disabled={sending} style={{ background: COLORS.amber }}>
+          {sending ? "Sending…" : "📨 Send Verification Code"}
+        </button>
+      )}
+
+      {error && <div style={{ color: COLORS.danger, fontSize: 12, marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
 function ProfileScreen({ user, onLogout, onManageSectors }) {
   const avatarKey = `sl_avatar_${user.uid}`;
   const [editing, setEditing] = useState(false);
@@ -4676,13 +4665,7 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
         </div>
         <div style={{ fontSize: 20, fontWeight: 700, marginTop: 6 }}>{user.name}</div>
         <div style={{ fontSize: 13, color: COLORS.textMuted }}>{user.email}</div>
-        <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 3, display: "flex", alignItems: "center", gap: 5 }}>
-          {user.phone}
-          {user.phoneVerified
-            ? <span style={{ fontSize: 9, background: COLORS.accentLight, color: COLORS.accent, borderRadius: 5, padding: "1px 5px", fontWeight: 700 }}>✅</span>
-            : <span style={{ fontSize: 9, background: COLORS.amberLight, color: COLORS.amber, borderRadius: 5, padding: "1px 5px", fontWeight: 700 }}>Unverified</span>
-          }
-        </div>
+        <div style={{ fontSize: 12, color: COLORS.textLight, marginTop: 3 }}>{user.phone}</div>
       </div>
 
       <div className="card">
@@ -4730,6 +4713,11 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
       <div className="section-title">Sharing & Collaboration</div>
       <StaffInviteSection user={user} />
 
+      <EmailVerifySection user={user} onVerified={() => {
+        const updated = { ...user, emailVerified: true };
+        const session = localStorage.getItem("rc_session");
+        if (session) localStorage.setItem("rc_session", JSON.stringify(updated));
+      }} />
       <div className="section-title">Privacy & Security</div>
       <div className="card" style={{ marginBottom: "0.75rem" }}>
         {(() => {
