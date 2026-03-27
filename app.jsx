@@ -897,7 +897,7 @@ function SignupScreen({ onAuth, onNavigate }) {
       });
       if (!result.ok) { setErrors({ email: result.error }); setLoading(false); return; }
       if (result.message) alert(result.message);
-      onAuth(result.user, selectedSectors);
+      onAuth(result.user, selectedSectors, true);
     } catch(e) {
       setErrors({ email: e.message || "Sign up failed. Please try again." });
       setLoading(false);
@@ -5175,35 +5175,41 @@ function App() {
     document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
 
-  // Auto-sync data to backend — every 30s + on storage change
+  // Real-time sync — push changes every 30s, pull latest every 15s
   useEffect(() => {
     if (!user?.uid) return;
     const uid = user.uid;
 
-    // Sync immediately on login
-    if (navigator.onLine) AuthAPI.syncToServer(uid).catch(() => {});
+    // On login: push local then pull server
+    if (navigator.onLine) {
+      AuthAPI.syncToServer(uid).catch(() => {});
+      setTimeout(() => AuthAPI.syncFromServer(uid).catch(() => {}), 2000);
+    }
 
-    // Then every 30 seconds
-    const interval = setInterval(() => {
+    // Push local changes every 30 seconds
+    const pushInterval = setInterval(() => {
       if (navigator.onLine) AuthAPI.syncToServer(uid).catch(() => {});
     }, 30000);
 
-    // Also sync when coming back online
+    // Pull server changes every 15 seconds (real-time across devices)
+    const pullInterval = setInterval(() => {
+      if (navigator.onLine) AuthAPI.syncFromServer(uid).catch(() => {});
+    }, 15000);
+
+    // Sync immediately when coming back online
     const handleOnline = () => {
-      setTimeout(() => AuthAPI.syncToServer(uid).catch(() => {}), 1000);
+      setTimeout(() => {
+        AuthAPI.syncToServer(uid).catch(() => {});
+        setTimeout(() => AuthAPI.syncFromServer(uid).catch(() => {}), 1500);
+      }, 500);
     };
     window.addEventListener("online", handleOnline);
 
     return () => {
-      clearInterval(interval);
+      clearInterval(pushInterval);
+      clearInterval(pullInterval);
       window.removeEventListener("online", handleOnline);
     };
-  }, [user?.uid]);
-
-  // Sync from server on login to get latest data across devices
-  useEffect(() => {
-    if (!user?.uid || !navigator.onLine) return;
-    AuthAPI.syncFromServer(user.uid).catch(() => {});
   }, [user?.uid]);
 
   // Register push notification subscription
@@ -5316,9 +5322,10 @@ function App() {
       if (pendingInvite) {
         const jwt = localStorage.getItem("rc_token");
         if (jwt) {
-          fetch(`${API_URL}/api/invite/accept/${pendingInvite}`, {
+          fetch(`${API_URL}/api/invite/accept`, {
             method: "POST",
-            headers: { Authorization: `Bearer ${jwt}` },
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+            body: JSON.stringify({ token: pendingInvite }),
           }).then(r => r.json()).then(data => {
             if (data.message) {
               localStorage.removeItem("rc_pending_invite");
@@ -5363,15 +5370,20 @@ function App() {
     }
   }, []);
 
-  const handleAuth = (u, sectors) => {
+  const [showPinSetup, setShowPinSetup] = useState(false);
+
+  const handleAuth = (u, sectors, isNewSignup = false) => {
     const fullUser = { ...u, sectors: sectors || u.sectors || ["shop"] };
     setUser(fullUser);
-    // Cache session with latest sectors immediately
     localStorage.setItem("rc_session", JSON.stringify(fullUser));
     if (sectors && sectors.length > 0) setSector(sectors[0]);
     setScreen("app");
     setNavTab("home");
     if (!showOnboarding) { setShowOnboarding(false); }
+    // Prompt PIN setup for new signups (if no PIN already set)
+    if (isNewSignup && !localStorage.getItem("sl_pin")) {
+      setTimeout(() => setShowPinSetup(true), 1200);
+    }
     // Pull latest data from server — also refresh profile to get latest sectors
     const token = localStorage.getItem("rc_token");
     if (token) {
@@ -5421,6 +5433,27 @@ function App() {
   if (screen === "welcome") return (<><style>{css}</style><WelcomeScreen onNavigate={setScreen} /></>);
   if (screen === "signup") return (<><style>{css}</style><SignupScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
   if (screen === "login") return (<><style>{css}</style><LoginScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
+
+  // PIN setup prompt for new signups
+  if (showPinSetup) return (
+    <><style>{css}</style>
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: COLORS.surface, borderRadius: 24, padding: 28, width: "100%", maxWidth: 360, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>🔒</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: COLORS.text, marginBottom: 8 }}>Set a PIN lock?</div>
+        <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 24, lineHeight: 1.6 }}>
+          Protect your business records with a 4-digit PIN. You can always set or change this later in Profile.
+        </div>
+        <button className="btn btn-primary" style={{ marginBottom: 10 }} onClick={() => { setShowPinSetup(false); setNavTab("profile"); }}>
+          🔐 Set PIN Now
+        </button>
+        <button onClick={() => setShowPinSetup(false)} style={{ width: "100%", background: "none", border: "none", color: COLORS.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 8 }}>
+          Skip for now
+        </button>
+      </div>
+    </div>
+    </>
+  );
 
   // PIN lock screen
   if (pin && !pinUnlocked) return (
@@ -5684,7 +5717,54 @@ function App() {
                 title="Search everything">
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
               </button>
-              <div className="avatar" onClick={() => setNavTab("profile")} style={{ overflow: "hidden" }}>{avatar ? <img src={avatar} alt="" style={{ width:"100%", height:"100%", objectFit:"cover", borderRadius:"50%" }} /> : initials}</div>
+              {/* Avatar dropdown */}
+              {(() => {
+                const [showProfileMenu, setShowProfileMenu] = React.useState(false);
+                return (
+                  <div style={{ position: "relative" }}>
+                    <div className="avatar" onClick={() => setShowProfileMenu(v => !v)}
+                      style={{ overflow: "hidden", cursor: "pointer" }}>
+                      {avatar ? <img src={avatar} alt="" style={{ width:"100%", height:"100%", objectFit:"cover", borderRadius:"50%" }} /> : initials}
+                    </div>
+                    {showProfileMenu && (
+                      <>
+                        <div style={{ position: "fixed", inset: 0, zIndex: 398 }} onClick={() => setShowProfileMenu(false)} />
+                        <div style={{
+                          position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 399,
+                          background: COLORS.surface, borderRadius: 12, boxShadow: "0 8px 30px rgba(0,0,0,0.15)",
+                          border: `1px solid ${COLORS.border}`, minWidth: 160, overflow: "hidden",
+                          animation: "scaleIn 0.15s ease",
+                        }}>
+                          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>{user?.name}</div>
+                            <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>{user?.email}</div>
+                          </div>
+                          <button onClick={() => { setNavTab("profile"); setShowProfileMenu(false); }} style={{
+                            width: "100%", padding: "11px 14px", background: "none", border: "none",
+                            cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
+                            fontSize: 13, fontWeight: 600, color: COLORS.text, fontFamily: "'Inter', sans-serif",
+                            textAlign: "left",
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = COLORS.bg}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                            👤 Profile
+                          </button>
+                          <button onClick={async () => { setShowProfileMenu(false); await AuthAPI.signOut(); setUser(null); setScreen("welcome"); }} style={{
+                            width: "100%", padding: "11px 14px", background: "none", border: "none",
+                            cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
+                            fontSize: 13, fontWeight: 600, color: COLORS.danger, fontFamily: "'Inter', sans-serif",
+                            textAlign: "left", borderTop: `1px solid ${COLORS.border}`,
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = COLORS.dangerLight}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                            🚪 Log Out
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
