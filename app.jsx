@@ -1817,13 +1817,13 @@ function RestockRow({ itemId, onRestock, onRemove, onUpdatePrice, currentPrice }
           <button className="btn btn-outline btn-sm" onClick={() => { setMode(null); setQty(""); }}>✕</button>
         </div>
       ) : mode === "price" ? (
-        <div style={{ marginTop: 4 }}>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 600 }}>
-            Current price: <span style={{ color: COLORS.primary }}>{NAIRA(currentPrice)}</span> — Enter new price:
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6, fontWeight: 600 }}>
+            Current: <span style={{ color: COLORS.primary }}>{NAIRA(currentPrice)}</span> — New price:
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <div style={{ position: "relative", flex: 1 }}>
-              <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: COLORS.textMuted, fontSize: 16, fontWeight: 700 }}>₦</span>
+          <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
+            <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: COLORS.textMuted, fontSize: 15, fontWeight: 700, zIndex: 1, pointerEvents: "none" }}>₦</span>
               <input
                 type="number"
                 className="form-input"
@@ -1834,18 +1834,28 @@ function RestockRow({ itemId, onRestock, onRemove, onUpdatePrice, currentPrice }
                 onKeyDown={e => e.key === "Enter" && savePrice()}
                 autoFocus
                 style={{
-                  paddingLeft: 30, fontSize: 20, height: 52,
-                  fontWeight: 800, fontFamily: "'Space Mono', monospace",
-                  letterSpacing: 1,
+                  paddingLeft: 28,
+                  fontSize: 18,
+                  height: 48,
+                  fontWeight: 700,
+                  fontFamily: "'Space Mono', monospace",
+                  width: "100%",
+                  boxSizing: "border-box",
                 }}
               />
             </div>
-            <button className="btn btn-primary" onClick={savePrice}
-              style={{ height: 52, padding: "0 14px", fontSize: 14, flexShrink: 0 }}>
-              Save
-            </button>
-            <button className="btn btn-outline" onClick={() => { setMode(null); setNewPrice(""); }}
-              style={{ height: 52, padding: "0 12px", flexShrink: 0 }}>✕</button>
+            <button onClick={savePrice} style={{
+              height: 48, width: 44, flexShrink: 0,
+              background: COLORS.primary, color: "#fff", border: "none",
+              borderRadius: 9, fontSize: 20, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>✓</button>
+            <button onClick={() => { setMode(null); setNewPrice(""); }} style={{
+              height: 48, width: 36, flexShrink: 0,
+              background: "none", border: `1px solid ${COLORS.border}`,
+              borderRadius: 9, fontSize: 15, cursor: "pointer", color: COLORS.textMuted,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>✕</button>
           </div>
         </div>
       ) : (
