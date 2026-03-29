@@ -59,21 +59,23 @@ const css = `
   [data-theme="dark"] {
     --bg: #0A0F1E;
     --surface: #161D31;
+    --surface2: #1E2640;
     --text: #F1F5F9;
     --text-muted: #94A3B8;
     --text-light: #4B5563;
-    --border: rgba(255,255,255,0.08);
-    --primary: #00C48C;
-    --primary-dark: #00A376;
-    --primary-light: #0A2419;
-    --accent: #00C48C;
-    --accent-light: #0A2419;
+    --border: rgba(255,255,255,0.09);
+    --primary: #3B82F6;
+    --primary-dark: #2563EB;
+    --primary-light: #1E3A5F;
+    --accent: #10B981;
+    --accent-light: #0A2E20;
     --danger: #F87171;
     --danger-light: #2D1515;
     --amber: #FBBF24;
     --amber-light: #2D2209;
     --purple: #A78BFA;
     --purple-light: #1E1535;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.4);
   }
   body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); transition: background 0.2s, color 0.2s; }
   input, select, textarea { font-family: 'Inter', sans-serif; }
@@ -117,70 +119,82 @@ const css = `
 
   .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .topbar { background: var(--surface); color: var(--text); padding: 0 1.25rem; display: flex; align-items: center; justify-content: space-between; height: 52px; border-bottom: 0.5px solid var(--border); position: sticky; top: 0; z-index: 40; }
+  [data-theme="dark"] .topbar { background: #0E1525; border-bottom-color: rgba(255,255,255,0.07); }
   .topbar-breadcrumb { font-size: 14px; font-weight: 600; color: var(--text); }
   .topbar-right { display: flex; gap: 8px; align-items: center; }
   .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--primary); cursor: pointer; }
 
   .main { flex: 1; padding: 1.25rem; overflow-y: auto; background: var(--bg); }
+  [data-theme="dark"] .main { background: #0A0F1E; }
 
-  .card { background: var(--surface); border-radius: 16px; border: 1px solid var(--border); padding: 1rem 1.1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(15,23,42,0.04); }
+  .card { background: var(--surface); border-radius: 16px; border: 1px solid var(--border); padding: 1rem 1.1rem; margin-bottom: 0.75rem; box-shadow: var(--card-shadow, 0 1px 3px rgba(15,23,42,0.04)); }
+  [data-theme="dark"] .card { border-color: rgba(255,255,255,0.07); }
+  [data-theme="dark"] .card-sm { border-color: rgba(255,255,255,0.06); }
   .card-sm { background: var(--surface); border-radius: 10px; border: 0.5px solid var(--border); padding: 0.75rem 0.9rem; margin-bottom: 0.6rem; }
 
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 1rem; }
   .stat-card { background: var(--surface); border-radius: 12px; border: 0.5px solid var(--border); padding: 0.85rem 1rem; }
-  .stat-label { font-size: 11px; color: ${COLORS.textMuted}; margin-bottom: 4px; }
-  .stat-value { font-size: 20px; font-weight: 600; font-family: 'Space Mono', monospace; color: ${COLORS.text}; }
-  .stat-sub { font-size: 10px; color: ${COLORS.textLight}; margin-top: 2px; }
+  .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+  .stat-value { font-size: 20px; font-weight: 600; font-family: 'Space Mono', monospace; color: var(--text); }
+  .stat-sub { font-size: 10px; color: var(--text-light); margin-top: 2px; }
 
-  .section-title { font-size: 13px; font-weight: 600; color: ${COLORS.textMuted}; text-transform: uppercase; letter-spacing: 0.08em; margin: 1.25rem 0 0.6rem; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 1.25rem 0 0.6rem; }
 
   .form-group { margin-bottom: 0.85rem; }
-  .form-label { font-size: 12px; font-weight: 500; color: ${COLORS.textMuted}; margin-bottom: 4px; display: block; }
+  .form-label { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 4px; display: block; }
   .form-input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 14px; color: var(--text); outline: none; font-family: 'Inter', sans-serif; transition: border-color 0.2s; }
+  [data-theme="dark"] .form-input { background: #0F1629; border-color: rgba(255,255,255,0.12); color: #F1F5F9; }
+  [data-theme="dark"] .form-input:focus { border-color: var(--primary); background: #161D31; }
+  [data-theme="dark"] .form-input::placeholder { color: rgba(255,255,255,0.25); }
   @media (max-width: 640px) { .form-input, .search-bar, input, select, textarea { font-size: 16px !important; } }
   .form-input:focus { border-color: var(--primary); background: var(--surface); }
   .form-input.error { border-color: var(--danger); }
-  .form-error { font-size: 11px; color: ${COLORS.danger}; margin-top: 3px; }
+  .form-error { font-size: 11px; color: var(--danger); margin-top: 3px; }
 
   .btn { border: none; border-radius: 9px; padding: 11px 20px; font-size: 14px; font-weight: 600; font-family: 'Inter', sans-serif; transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; justify-content: center; }
-  .btn-primary { background: linear-gradient(135deg, ${COLORS.primary}, ${COLORS.primaryDark}); color: #fff; width: 100%; box-shadow: 0 2px 8px rgba(37,99,235,0.3); }
-  .btn-primary:hover { background: linear-gradient(135deg, ${COLORS.primaryDark}, #1E3A8A); box-shadow: 0 4px 12px rgba(37,99,235,0.4); }
+  .btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-dark, #1D4ED8)); color: #fff; width: 100%; box-shadow: 0 2px 8px rgba(37,99,235,0.2); }
+  .btn-primary:hover { background: linear-gradient(135deg, var(--primary), #1E3A8A); box-shadow: 0 4px 12px rgba(37,99,235,0.3); }
   .btn-primary:active { transform: scale(0.98); }
-  .btn-outline { background: transparent; border: 1px solid ${COLORS.border}; color: ${COLORS.text}; }
-  .btn-outline:hover { background: ${COLORS.bg}; }
-  .btn-danger { background: ${COLORS.dangerLight}; color: ${COLORS.danger}; border: none; }
-  .btn-success { background: ${COLORS.accentLight}; color: ${COLORS.accent}; border: none; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-outline:hover { background: var(--bg); }
+  .btn-danger { background: var(--danger-light); color: var(--danger); border: none; }
+  .btn-success { background: var(--accent-light); color: var(--accent); border: none; }
   .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 7px; }
 
   .pill { display: inline-flex; align-items: center; border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 500; }
-  .pill-green { background: ${COLORS.accentLight}; color: ${COLORS.accent}; }
-  .pill-amber { background: ${COLORS.amberLight}; color: ${COLORS.amber}; }
-  .pill-red { background: ${COLORS.dangerLight}; color: ${COLORS.danger}; }
-  .pill-blue { background: ${COLORS.primaryLight}; color: ${COLORS.primary}; }
+  .pill-green { background: var(--accent-light); color: var(--accent); }
+  .pill-amber { background: var(--amber-light); color: var(--amber); }
+  .pill-red { background: var(--danger-light); color: var(--danger); }
+  .pill-blue { background: var(--primary-light); color: var(--primary); }
 
-  .entry-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 0.5px solid ${COLORS.border}; }
+  .entry-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 0.5px solid var(--border); }
   .entry-row:last-child { border-bottom: none; }
   .entry-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
   .entry-content { flex: 1; min-width: 0; }
   .entry-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .entry-sub { font-size: 12px; color: ${COLORS.textMuted}; margin-top: 2px; }
-  .entry-amount { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: ${COLORS.text}; flex-shrink: 0; }
+  .entry-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .entry-amount { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: var(--text); flex-shrink: 0; }
 
   .search-bar { width: 100%; padding: 10px 36px 10px 38px; border-radius: 12px; border: 1.5px solid var(--border); background: var(--surface); font-size: 13px; font-family: 'Inter', sans-serif; outline: none; transition: border-color 0.2s, box-shadow 0.2s; color: var(--text); }
+  [data-theme="dark"] .search-bar { background: #0F1629; border-color: rgba(255,255,255,0.1); color: #F1F5F9; }
+  [data-theme="dark"] .search-bar::placeholder { color: rgba(255,255,255,0.25); }
+  [data-theme="dark"] .search-bar:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
   .search-bar:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
   .search-wrap { position: relative; margin-bottom: 0.75rem; }
-  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: ${COLORS.textLight}; }
+  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-light); }
 
   .tab-bar { display: flex; background: var(--bg); border-radius: 10px; padding: 3px; margin-bottom: 1rem; }
+  [data-theme="dark"] .tab-bar { background: #0F1629; }
+  [data-theme="dark"] .tab-btn.active { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
   .tab-btn { flex: 1; border: none; background: none; padding: 7px; font-size: 12px; font-weight: 500; border-radius: 8px; color: var(--text-muted); font-family: 'Inter', sans-serif; transition: all 0.15s; }
   .tab-btn.active { background: var(--surface); color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
-  .sector-card { background: ${COLORS.surface}; border-radius: 16px; border: 2px solid transparent; padding: 1.25rem; margin-bottom: 0.75rem; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 14px; }
-  .sector-card:hover { border-color: ${COLORS.primary}; }
-  .sector-card.active { border-color: ${COLORS.primary}; background: ${COLORS.primaryLight}; }
+  .sector-card { background: var(--surface); border-radius: 16px; border: 2px solid transparent; padding: 1.25rem; margin-bottom: 0.75rem; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 14px; }
+  .sector-card:hover { border-color: var(--primary); }
+  .sector-card.active { border-color: var(--primary); background: var(--primary-light); }
   .sector-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
   .sector-info h3 { font-size: 15px; font-weight: 600; }
-  .sector-info p { font-size: 12px; color: ${COLORS.textMuted}; margin-top: 3px; }
+  .sector-info p { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
 
   .welcome-screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; background: linear-gradient(145deg, #1E3A8A 0%, #1D4ED8 40%, #2563EB 70%, #0F766E 100%); color: #fff; }
   .welcome-logo { font-family: 'Space Mono', monospace; font-size: 32px; font-weight: 700; margin-bottom: 8px; }
@@ -188,32 +202,32 @@ const css = `
   .welcome-art { font-size: 72px; margin-bottom: 2rem; }
 
   .auth-card { background: #fff; border-radius: 20px; padding: 1.75rem; width: 100%; max-width: 360px; }
-  .auth-title { font-size: 20px; font-weight: 700; color: ${COLORS.text}; margin-bottom: 4px; }
-  .auth-sub { font-size: 13px; color: ${COLORS.textMuted}; margin-bottom: 1.5rem; }
+  .auth-title { font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .auth-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 1.5rem; }
 
-  .toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: ${COLORS.text}; color: #fff; padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 500; z-index: 999; animation: toastIn 0.3s ease; white-space: nowrap; }
-  .toast.success { background: ${COLORS.accent}; }
-  .toast.error { background: ${COLORS.danger}; }
+  .toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 500; z-index: 999; animation: toastIn 0.3s ease; white-space: nowrap; }
+  .toast.success { background: var(--accent); color: #fff; }
+  .toast.error { background: var(--danger); color: #fff; }
   @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   @keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-  .empty-state { text-align: center; padding: 3rem 1rem; color: ${COLORS.textMuted}; }
+  .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-muted); }
   .empty-icon { font-size: 48px; margin-bottom: 1rem; }
-  .empty-state h3 { font-size: 16px; font-weight: 600; color: ${COLORS.text}; margin-bottom: 6px; }
+  .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
   .empty-state p { font-size: 13px; }
 
-  .stock-bar { height: 4px; border-radius: 2px; background: ${COLORS.bg}; margin-top: 4px; }
+  .stock-bar { height: 4px; border-radius: 2px; background: var(--bg); margin-top: 4px; }
   .stock-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
 
   .divider { height: 0.5px; background: var(--border); margin: 0.75rem 0; }
 
-  .profile-avatar-lg { width: 80px; height: 80px; border-radius: 50%; background: ${COLORS.primaryLight}; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; color: ${COLORS.primary}; margin: 0 auto 0; overflow: hidden; position: relative; cursor: pointer; }
+  .profile-avatar-lg { width: 80px; height: 80px; border-radius: 50%; background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; color: var(--primary); margin: 0 auto 0; overflow: hidden; position: relative; cursor: pointer; }
   .profile-avatar-lg img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
   .avatar-edit-overlay { position: absolute; inset: 0; border-radius: 50%; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.15s; cursor: pointer; }
   .profile-avatar-lg:hover .avatar-edit-overlay { opacity: 1; }
 
-  .chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 500; background: ${COLORS.bg}; color: ${COLORS.textMuted}; border: 0.5px solid ${COLORS.border}; cursor: pointer; transition: all 0.15s; }
-  .chip.active { background: ${COLORS.primaryLight}; color: ${COLORS.primary}; border-color: ${COLORS.primary}; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 500; background: var(--bg); color: var(--text-muted); border: 0.5px solid var(--border); cursor: pointer; transition: all 0.15s; }
+  .chip.active { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
 
   .export-row { display: flex; gap: 8px; margin-top: 0.75rem; }
   select.form-input { appearance: none; }
@@ -260,6 +274,7 @@ const css = `
 
   /* ── Safe area insets for notched phones ── */
   .bottom-tab-bar { padding-bottom: env(safe-area-inset-bottom, 0px); height: calc(54px + env(safe-area-inset-bottom, 0px)); background: #0F172A; }
+  [data-theme="dark"] .bottom-tab-bar { background: #080D1A; border-top-color: rgba(255,255,255,0.06); }
   .main { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
 
   /* ── Prevent text size inflation on rotation ── */
@@ -1158,154 +1173,184 @@ function LoginScreen({ onAuth, onNavigate }) {
 function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview, onViewDebt }) {
   const userSectors = (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
   const activeSectors = ALL_SECTORS.filter(s => userSectors.includes(s.id));
-  const avatarKey = `sl_avatar_${user.uid}`;
+  const avatarKey  = `sl_avatar_${user.uid}`;
   const storedAvatar = (() => { try { return JSON.parse(localStorage.getItem(avatarKey)); } catch { return null; } })();
   const initials = user.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const greeting = hour < 5 ? "Good night" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const greetEmoji = hour < 5 ? "🌙" : hour < 12 ? "☀️" : hour < 17 ? "🌤️" : "🌙";
   const today = new Date().toLocaleDateString("en-NG", { weekday: "long", day: "numeric", month: "long" });
+
+  // Quick stats
+  const invKey   = `sl_inv_${user.uid}`;
+  const salesKey = `sl_shopsales_${user.uid}`;
+  const debtKey  = `sl_debt_${user.uid}`;
+  const inv   = (() => { try { return JSON.parse(localStorage.getItem(invKey))   || []; } catch { return []; } })();
+  const sales = (() => { try { return JSON.parse(localStorage.getItem(salesKey)) || []; } catch { return []; } })();
+  const debts = (() => { try { return JSON.parse(localStorage.getItem(debtKey))  || []; } catch { return []; } })();
+  const todaySales  = sales.filter(s => s.date === TODAY()).reduce((a, s) => a + (s.total || 0), 0);
+  const outstanding = debts.filter(r => !r.settled).length;
+  const overdue     = debts.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
+  const lowStock    = inv.filter(i => i.stock < 5).length;
+
+  const sectorGradients = {
+    shop:  "linear-gradient(135deg, #1E40AF 0%, #2563EB 100%)",
+    farm:  "linear-gradient(135deg, #065F46 0%, #059669 100%)",
+    sales: "linear-gradient(135deg, #5B21B6 0%, #7C3AED 100%)",
+    debt:  overdue > 0
+      ? "linear-gradient(135deg, #991B1B 0%, #DC2626 100%)"
+      : "linear-gradient(135deg, #1E3A8A 0%, #4338CA 100%)",
+  };
 
   return (
     <div style={{ paddingBottom: 16 }}>
-      {/* Hero greeting banner */}
+
+      {/* ── Hero banner ── */}
       <div style={{
-        background: `linear-gradient(135deg, ${COLORS.primary} 0%, ${COLORS.primaryDark} 50%, #1E3A8A 100%)`,
-        borderRadius: 20, padding: "20px 18px", marginBottom: "1rem",
+        background: "linear-gradient(135deg, #1E3A8A 0%, #1D4ED8 55%, #0F766E 100%)",
+        borderRadius: 22, padding: "22px 18px 18px", marginBottom: "1rem",
         position: "relative", overflow: "hidden", color: "#fff",
       }}>
-        <div style={{ position: "absolute", top: -24, right: -24, width: 96, height: 96, borderRadius: "50%", background: "rgba(255,255,255,0.07)" }} />
-        <div style={{ position: "absolute", bottom: -16, right: 40, width: 64, height: 64, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 46, height: 46, borderRadius: "50%", background: "rgba(255,255,255,0.2)", border: "2px solid rgba(255,255,255,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, overflow: "hidden", flexShrink: 0 }}>
-            {storedAvatar ? <img src={storedAvatar} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" /> : initials}
+        {/* Decorative circles */}
+        <div style={{ position:"absolute", top:-30, right:-30, width:110, height:110, borderRadius:"50%", background:"rgba(255,255,255,0.06)", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", bottom:-20, left:-20, width:80, height:80, borderRadius:"50%", background:"rgba(255,255,255,0.04)", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", top:10, right:80, width:50, height:50, borderRadius:"50%", background:"rgba(255,255,255,0.04)", pointerEvents:"none" }} />
+
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
+          <div style={{ width:48, height:48, borderRadius:"50%", background:"rgba(255,255,255,0.18)", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:17, overflow:"hidden", flexShrink:0 }}>
+            {storedAvatar ? <img src={storedAvatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} alt="" /> : initials}
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, opacity: 0.7, fontWeight: 400 }}>{greeting} 👋</div>
-            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 1 }}>{user.name.split(" ")[0]}</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, opacity:0.75, fontWeight:500 }}>{greeting} {greetEmoji}</div>
+            <div style={{ fontSize:20, fontWeight:800, marginTop:1, letterSpacing:"-0.3px" }}>{user.name.split(" ")[0]}</div>
           </div>
           <button onClick={onViewOverview} style={{
-            background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)",
-            borderRadius: 12, padding: "7px 12px", color: "#fff", cursor: "pointer",
-            fontFamily: "'Inter', sans-serif", display: "flex", flexDirection: "column",
-            alignItems: "center", gap: 2, transition: "background 0.15s", flexShrink: 0,
+            background:"rgba(255,255,255,0.15)", border:"1.5px solid rgba(255,255,255,0.3)",
+            borderRadius:12, padding:"8px 12px", color:"#fff", cursor:"pointer",
+            fontFamily:"'Inter', sans-serif", display:"flex", flexDirection:"column",
+            alignItems:"center", gap:3, transition:"background 0.15s", flexShrink:0,
           }}>
-            <span style={{ fontSize: 16 }}>📊</span>
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", opacity: 0.9 }}>OVERVIEW</span>
+            <span style={{ fontSize:18 }}>📊</span>
+            <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.06em", opacity:0.9 }}>OVERVIEW</span>
           </button>
         </div>
-        <div style={{ fontSize: 11, opacity: 0.55, marginTop: 10, display: "flex", alignItems: "center", gap: 4 }}>
-          📅 {today}
-          {user.location && <> · 📍 {user.location}</>}
+
+        {/* Quick stat row inside hero */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+          {[
+            { label:"Today's Sales", value: todaySales > 0 ? NAIRA(todaySales) : "₦0", icon:"💰", color:"rgba(255,255,255,0.9)" },
+            { label:"Outstanding", value: outstanding > 0 ? `${outstanding} record${outstanding !== 1 ? "s" : ""}` : "All clear", icon:"🤝", color: outstanding > 0 ? "#FCD34D" : "rgba(255,255,255,0.9)" },
+            { label:"Low Stock", value: lowStock > 0 ? `${lowStock} item${lowStock !== 1 ? "s" : ""}` : "All good", icon:"📦", color: lowStock > 0 ? "#FCA5A5" : "rgba(255,255,255,0.9)" },
+          ].map((stat, i) => (
+            <div key={i} style={{ background:"rgba(255,255,255,0.1)", borderRadius:12, padding:"10px 10px 8px", border:"1px solid rgba(255,255,255,0.12)" }}>
+              <div style={{ fontSize:16, marginBottom:4 }}>{stat.icon}</div>
+              <div style={{ fontSize:12, fontWeight:800, color:stat.color, lineHeight:1.2 }}>{stat.value}</div>
+              <div style={{ fontSize:9, opacity:0.65, marginTop:3, fontWeight:500 }}>{stat.label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize:10, opacity:0.5, marginTop:12, display:"flex", alignItems:"center", gap:5 }}>
+          📅 {today}{user.location && <> · 📍 {user.location}</>}
         </div>
       </div>
 
       {/* Notification banner */}
       <NotificationBanner user={user} />
 
-      {/* Cloud backup reminder — only show offline */}
+      {/* Cloud backup reminder — offline only */}
       {!navigator.onLine && (() => {
         const lastExportKey = `sl_lastexport_${user?.uid}`;
         const lastExport = localStorage.getItem(lastExportKey);
         const daysSince = lastExport ? Math.floor((Date.now() - new Date(lastExport)) / 86400000) : 999;
         if (daysSince < 7) return null;
         return (
-          <div style={{ background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "10px 14px", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 20, flexShrink: 0 }}>☁️</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary }}>
-                {lastExport ? `No export in ${daysSince} days` : "No local backup yet"}
-              </div>
-              <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 1 }}>Export your records to keep a local copy.</div>
+          <div style={{ background:"var(--primary-light)", border:`1.5px solid var(--primary)`, borderRadius:12, padding:"10px 14px", marginBottom:"0.75rem", display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:20, flexShrink:0 }}>☁️</span>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:"var(--primary)" }}>{lastExport ? `No export in ${daysSince} days` : "No local backup yet"}</div>
+              <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:1 }}>Export your records to keep a local copy.</div>
             </div>
             <button onClick={() => { setShowExport(true); localStorage.setItem(lastExportKey, new Date().toISOString()); }} style={{
-              flexShrink: 0, background: COLORS.primary, color: "#fff", border: "none", borderRadius: 8,
-              padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+              flexShrink:0, background:"var(--primary)", color:"#fff", border:"none", borderRadius:8,
+              padding:"6px 12px", fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"'Inter', sans-serif",
             }}>Export</button>
           </div>
         );
       })()}
 
-      {/* Quick action grid */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.6rem" }}>
-        <div className="section-title" style={{ margin: 0 }}>Your Sectors</div>
-        <button onClick={onManageSectors} style={{ background: "none", border: "none", color: COLORS.primary, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", display: "flex", alignItems: "center", gap: 4 }}>
+      {/* ── Sectors ── */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"0.7rem" }}>
+        <div className="section-title" style={{ margin:0 }}>Your Sectors</div>
+        <button onClick={onManageSectors} style={{ background:"none", border:"none", color:"var(--primary)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Inter', sans-serif", display:"flex", alignItems:"center", gap:4 }}>
           <Icon name="settings" size={13} /> Manage
         </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: "1.25rem" }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:"1rem" }}>
         {activeSectors.map(s => (
-          <div key={s.id} onClick={() => onSetSector(s.id)}
-            onMouseEnter={e => {
-              e.currentTarget.style.border = `2px solid ${s.borderColor}`;
-              e.currentTarget.style.background = s.color;
-              e.currentTarget.style.boxShadow = `0 4px 14px ${s.borderColor}55`;
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.border = `1.5px solid ${COLORS.border}`;
-              e.currentTarget.style.background = COLORS.surface;
-              e.currentTarget.style.boxShadow = "0 1px 3px rgba(15,23,42,0.04)";
-            }}
-            style={{
-              borderRadius: 16, padding: "16px 14px",
-              border: `1.5px solid ${COLORS.border}`,
-              background: COLORS.surface,
-              cursor: "pointer", transition: "all 0.18s",
-              boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-            }}>
-            <div style={{ fontSize: 28, marginBottom: 8 }}>{s.icon}</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text, lineHeight: 1.3 }}>
-              {s.id === "sales" ? "Sales Rep" : s.id === "shop" ? "Shop Sales" : "Farm"}
+          <button key={s.id} onClick={() => onSetSector(s.id)} style={{
+            borderRadius:18, padding:"18px 14px",
+            background:sectorGradients[s.id] || sectorGradients.shop,
+            border:"none", cursor:"pointer", transition:"all 0.18s",
+            boxShadow:"0 4px 16px rgba(0,0,0,0.18)",
+            textAlign:"left", position:"relative", overflow:"hidden",
+          }}>
+            <div style={{ position:"absolute", top:-16, right:-16, width:60, height:60, borderRadius:"50%", background:"rgba(255,255,255,0.08)" }} />
+            <div style={{ fontSize:30, marginBottom:10 }}>{s.icon}</div>
+            <div style={{ fontSize:14, fontWeight:800, color:"#fff", lineHeight:1.3 }}>
+              {s.id === "sales" ? "Sales Rep" : s.id === "shop" ? "Shop Sales" : s.id === "farm" ? "Farm Records" : s.label}
             </div>
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 3, lineHeight: 1.4 }}>{s.desc.split("—")[0].trim()}</div>
-          </div>
+            <div style={{ fontSize:10, color:"rgba(255,255,255,0.65)", marginTop:4, lineHeight:1.4 }}>
+              {s.desc.split("—")[0].trim()}
+            </div>
+          </button>
         ))}
+
         {activeSectors.length === 0 && (
-          <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "2rem", color: COLORS.textMuted, fontSize: 13 }}>
-            <div style={{ fontSize: 36, marginBottom: 8 }}>🗂️</div>
+          <div style={{ gridColumn:"1 / -1", textAlign:"center", padding:"2rem", color:"var(--text-muted)", fontSize:13 }}>
+            <div style={{ fontSize:36, marginBottom:8 }}>🗂️</div>
             Tap Manage to select your sectors
           </div>
         )}
-        {/* Debt & Credit card — always shown, always clickable */}
-        {(() => {
-          const debtKey = `sl_debt_${user.uid}`;
-          const recs = (() => { try { return JSON.parse(localStorage.getItem(debtKey)) || []; } catch { return []; } })();
-          const outstanding = recs.filter(r => !r.settled).length;
-          const overdue     = recs.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
-          return (
-            <div onClick={onViewDebt} style={{
-              gridColumn: "1 / -1",
-              borderRadius: 16, padding: "16px 14px",
-              border: `2px solid ${overdue > 0 ? "#FCA5A5" : "#C7D2FE"}`,
-              background: overdue > 0 ? "#FEF2F2" : "#EEF2FF",
-              cursor: "pointer", transition: "all 0.18s",
-              boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-              display: "flex", alignItems: "center", gap: 14,
-              position: "relative", overflow: "hidden",
-            }}>
-              <div style={{ height: 3, position: "absolute", top: 0, left: 0, right: 0, background: overdue > 0 ? "#EF4444" : "#6366F1", borderRadius: "14px 14px 0 0" }} />
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: overdue > 0 ? "#FEE2E2" : "#E0E7FF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>🤝</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>Debt & Credit</div>
-                <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
-                  {outstanding > 0 ? `${outstanding} outstanding record${outstanding !== 1 ? "s" : ""}` : "No outstanding records"}
-                </div>
-              </div>
-              {overdue > 0 && (
-                <div style={{ background: "#EF4444", color: "#fff", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                  {overdue} overdue
-                </div>
-              )}
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={COLORS.textMuted} strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+
+        {/* Debt & Credit full-width card */}
+        <button onClick={onViewDebt} style={{
+          gridColumn:"1 / -1",
+          borderRadius:18, padding:"16px 18px",
+          background:sectorGradients.debt,
+          border:"none", cursor:"pointer", transition:"all 0.18s",
+          boxShadow:`0 4px 16px ${overdue > 0 ? "rgba(220,38,38,0.3)" : "rgba(79,70,229,0.25)"}`,
+          display:"flex", alignItems:"center", gap:14, textAlign:"left",
+          position:"relative", overflow:"hidden",
+        }}>
+          <div style={{ position:"absolute", top:-20, right:-20, width:70, height:70, borderRadius:"50%", background:"rgba(255,255,255,0.07)" }} />
+          <div style={{ width:46, height:46, borderRadius:13, background:"rgba(255,255,255,0.18)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, flexShrink:0 }}>🤝</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>Debt & Credit</div>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,0.65)", marginTop:3 }}>
+              {outstanding > 0 ? `${outstanding} outstanding record${outstanding !== 1 ? "s" : ""}` : "No outstanding records"}
             </div>
-          );
-        })()}
+          </div>
+          {overdue > 0 ? (
+            <div style={{ background:"rgba(255,255,255,0.22)", color:"#fff", borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:800, flexShrink:0 }}>
+              ⚠️ {overdue} overdue
+            </div>
+          ) : (
+            <div style={{ background:"rgba(255,255,255,0.15)", color:"rgba(255,255,255,0.8)", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:600, flexShrink:0 }}>
+              View →
+            </div>
+          )}
+        </button>
       </div>
 
-      {/* Bottom caption */}
-      <div style={{ textAlign: "center", marginTop: "1.5rem", paddingBottom: 4 }}>
-        <div style={{ fontSize: 11, color: COLORS.textLight, fontStyle: "italic", letterSpacing: "0.02em" }}>
-          Your business records, organized
+      {/* ── Motivational footer ── */}
+      <div style={{ textAlign:"center", marginTop:"1rem", padding:"14px 16px", background:"var(--surface)", borderRadius:16, border:"1px solid var(--border)" }}>
+        <div style={{ fontSize:13, fontWeight:600, color:"var(--text)", marginBottom:3 }}>
+          📒 Record Chief
+        </div>
+        <div style={{ fontSize:11, color:"var(--text-muted)", letterSpacing:"0.01em" }}>
+          Your business records, always organized
         </div>
       </div>
 
