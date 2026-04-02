@@ -1664,9 +1664,9 @@ function SalesRepScreen({ user }) {
 
       {/* ── View Record Modal ── */}
       {viewEntry && (
-        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}
           onClick={() => setViewEntry(null)}>
-          <div style={{ background:"var(--surface)", borderRadius:"24px 24px 0 0", width:"100%", maxWidth:520, maxHeight:"85vh", overflow:"hidden", display:"flex", flexDirection:"column", animation:"slideUp 0.3s ease" }}
+          <div style={{ background:"var(--surface)", borderRadius:24, width:"100%", maxWidth:480, maxHeight:"80vh", overflow:"hidden", display:"flex", flexDirection:"column", animation:"scaleIn 0.2s ease", boxShadow:"0 24px 60px rgba(0,0,0,0.3)" }}
             onClick={e => e.stopPropagation()}>
             {/* Header */}
             <div style={{ padding:"20px 20px 14px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
