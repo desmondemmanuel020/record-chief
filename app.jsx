@@ -858,28 +858,42 @@ const AuthAPI = {
 
       let changed = false;
 
-      const apply = (key, val) => {
-        if (val === undefined || val === null) return;
-        const str = JSON.stringify(val);
-        if (localStorage.getItem(key) !== str) {
-          localStorage.setItem(key, str);
-          changed = true;
-        }
+      // SAFE apply: only replace local data with server data if server has MORE records
+      // This prevents an empty server from wiping locally-added data
+      const safeApply = (key, serverVal) => {
+        if (serverVal === undefined || serverVal === null) return;
+        try {
+          const localRaw = localStorage.getItem(key);
+          const localVal = localRaw ? JSON.parse(localRaw) : null;
+
+          // For arrays: keep whichever has more records
+          if (Array.isArray(serverVal) && Array.isArray(localVal)) {
+            if (serverVal.length === 0 && localVal.length > 0) return; // never overwrite with empty
+            if (serverVal.length < localVal.length) return; // server is behind, keep local
+          }
+
+          // For non-arrays or if server has more: apply server data
+          const str = JSON.stringify(serverVal);
+          if (localRaw !== str) {
+            localStorage.setItem(key, str);
+            changed = true;
+          }
+        } catch(e) {}
       };
 
-      apply(`sl_inv_${uid}`,           data.inventory);
-      apply(`sl_shopsales_${uid}`,     data.shopSales);
-      apply(`sl_farm_${uid}`,          data.farmExpenses);
-      apply(`sl_sales_${uid}`,         data.salesEntries);
-      apply(`sl_sales_fields_${uid}`,  data.salesFields);
-      apply(`sl_debt_${uid}`,          data.debtRecords);
+      safeApply(`sl_inv_${uid}`,          data.inventory);
+      safeApply(`sl_shopsales_${uid}`,    data.shopSales);
+      safeApply(`sl_farm_${uid}`,         data.farmExpenses);
+      safeApply(`sl_sales_${uid}`,        data.salesEntries);
+      safeApply(`sl_sales_fields_${uid}`, data.salesFields);
+      safeApply(`sl_debt_${uid}`,         data.debtRecords);
 
-      // Restore settings
+      // Settings — always apply
       if (data.settings?.darkMode !== undefined) {
         localStorage.setItem("sl_darkmode", data.settings.darkMode);
       }
 
-      // If data changed, fire a custom event so React re-renders
+      // Fire re-render event if anything changed
       if (changed) {
         window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
       }
@@ -1378,6 +1392,7 @@ function SalesRepScreen({ user }) {
   const [showFilters, setShowFilters] = useState(false);
   const [showManageFields, setShowManageFields] = useState(false);
   const [showFieldChoice, setShowFieldChoice] = useState(false);
+  const [viewEntry, setViewEntry] = useState(null); // entry to view
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); };
 
@@ -1615,6 +1630,10 @@ function SalesRepScreen({ user }) {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    <button className="btn btn-sm" onClick={() => setViewEntry(entry)}
+                      style={{ background: "var(--primary-light)", color: "var(--primary)", border: "none", padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                      View
+                    </button>
                     <button className="btn btn-sm btn-outline" onClick={() => openEdit(entry)}><Icon name="edit" size={13} /></button>
                     <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(entry.id)}><Icon name="trash" size={13} /></button>
                   </div>
@@ -1642,6 +1661,53 @@ function SalesRepScreen({ user }) {
       >
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
       </button>
+
+      {/* ── View Record Modal ── */}
+      {viewEntry && (
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          onClick={() => setViewEntry(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:"24px 24px 0 0", width:"100%", maxWidth:520, maxHeight:"85vh", overflow:"hidden", display:"flex", flexDirection:"column", animation:"slideUp 0.3s ease" }}
+            onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div style={{ padding:"20px 20px 14px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>👤</div>
+                <div>
+                  <div style={{ fontSize:17, fontWeight:800, color:"var(--text)" }}>
+                    {viewEntry[orderedFields[0]?.id] || "Customer Record"}
+                  </div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
+                    Added {new Date(viewEntry.createdAt).toLocaleDateString("en-NG", { day:"numeric", month:"short", year:"numeric" })}
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setViewEntry(null)} style={{ background:"var(--bg)", border:"none", width:32, height:32, borderRadius:"50%", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, color:"var(--text-muted)" }}>×</button>
+            </div>
+
+            {/* Fields */}
+            <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
+              {orderedFields.map((f, i) => {
+                const val = viewEntry[f.id];
+                if (!val && val !== 0) return null;
+                return (
+                  <div key={f.id} style={{ marginBottom:14, paddingBottom:14, borderBottom: i < orderedFields.length - 1 ? `0.5px solid var(--border)` : "none" }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>{f.name}</div>
+                    <div style={{ fontSize:15, fontWeight:f.id === orderedFields[0]?.id ? 700 : 500, color:"var(--text)", lineHeight:1.5, wordBreak:"break-word" }}>{val}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Actions */}
+            <div style={{ padding:"12px 20px 20px", borderTop:`1px solid var(--border)`, display:"flex", gap:10, flexShrink:0 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setViewEntry(null)}>Close</button>
+              <button className="btn btn-primary" style={{ flex:2 }} onClick={() => { openEdit(viewEntry); setViewEntry(null); }}>
+                ✏️ Edit Record
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Field choice pop-up ── */}
       {showFieldChoice && (
@@ -4909,7 +4975,10 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
       </div>
 
       <div className="section-title">Sharing & Collaboration</div>
-      <StaffInviteSection user={user} />
+      {/* Staff invite — shop sector only */}
+      {(user.sectors || ["shop"]).includes("shop") && (
+        <StaffInviteSection user={user} />
+      )}
 
       <EmailVerifySection user={user} onVerified={() => {
         const updated = { ...user, emailVerified: true };
@@ -5541,7 +5610,7 @@ function App() {
   const handleLogout = async () => {
     await AuthAPI.signOut();
     setUser(null);
-    setScreen("welcome");
+    setScreen("login");
   };
 
   const handleManageSectors = () => setNavTab("manageSectors");
@@ -5883,7 +5952,7 @@ function App() {
                       onMouseLeave={e => e.currentTarget.style.background = "none"}>
                         👤 Profile
                       </button>
-                      <button onClick={async () => { setShowProfileMenu(false); await AuthAPI.signOut(); setUser(null); setScreen("welcome"); }} style={{
+                      <button onClick={async () => { setShowProfileMenu(false); await AuthAPI.signOut(); setUser(null); setScreen("login"); }} style={{
                         width: "100%", padding: "11px 14px", background: "none", border: "none",
                         cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
                         fontSize: 13, fontWeight: 600, color: COLORS.danger, fontFamily: "'Inter', sans-serif",
