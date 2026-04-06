@@ -1,6 +1,9 @@
 const { useState, useEffect, useCallback, useRef } = React;
 
-const NAIRA = (n) => `₦${Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+const CURRENCIES = { NGN:"₦", USD:"$", GBP:"£", EUR:"€", GHS:"₵", KES:"KSh", ZAR:"R" };
+const getCurrency = () => localStorage.getItem("sl_currency") || "NGN";
+const getCurrencySymbol = () => CURRENCIES[getCurrency()] || "₦";
+const NAIRA = (n) => `${getCurrencySymbol()}${Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 const TODAY = () => new Date().toISOString().split("T")[0];
 const TS = () => new Date().toISOString();
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -653,41 +656,181 @@ function MiniBarChart({ data, color, label }) {
 }
 
 // ===================== AUTH =====================
+
+
+// ═══════════════════════════════════════════════════════
+// IndexedDB wrapper — faster, larger capacity than localStorage
+// Falls back to localStorage silently if IDB not available
+// ═══════════════════════════════════════════════════════
+const IDB = (() => {
+  const DB_NAME = "RecordChief";
+  const DB_VER  = 1;
+  const STORE   = "data";
+  let _db = null;
+
+  const open = () => new Promise((res, rej) => {
+    if (_db) return res(_db);
+    if (!window.indexedDB) return rej(new Error("IDB not available"));
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onsuccess = e => { _db = e.target.result; res(_db); };
+    req.onerror   = e => rej(e.target.error);
+  });
+
+  return {
+    async get(key) {
+      try {
+        const db = await open();
+        return new Promise((res, rej) => {
+          const tx  = db.transaction(STORE, "readonly");
+          const req = tx.objectStore(STORE).get(key);
+          req.onsuccess = () => res(req.result);
+          req.onerror   = () => rej(req.error);
+        });
+      } catch(e) {
+        // fallback to localStorage
+        try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : undefined; } catch { return undefined; }
+      }
+    },
+    async set(key, value) {
+      try {
+        const db = await open();
+        return new Promise((res, rej) => {
+          const tx  = db.transaction(STORE, "readwrite");
+          const req = tx.objectStore(STORE).put(value, key);
+          req.onsuccess = () => res();
+          req.onerror   = () => rej(req.error);
+        });
+      } catch(e) {
+        // fallback to localStorage
+        try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+      }
+    },
+    async del(key) {
+      try {
+        const db = await open();
+        return new Promise((res, rej) => {
+          const tx  = db.transaction(STORE, "readwrite");
+          const req = tx.objectStore(STORE).delete(key);
+          req.onsuccess = () => res();
+          req.onerror   = () => rej(req.error);
+        });
+      } catch(e) {
+        localStorage.removeItem(key);
+      }
+    },
+  };
+})();
+
+// ── Sync conflict log ─────────────────────────────────
+// Tracks when local data was kept over server data
+const SyncLog = {
+  KEY: "rc_sync_log",
+  MAX: 50,
+  add(entry) {
+    try {
+      const log = this.get();
+      log.unshift({ ...entry, ts: new Date().toISOString() });
+      localStorage.setItem(this.KEY, JSON.stringify(log.slice(0, this.MAX)));
+    } catch(e) {}
+  },
+  get() {
+    try { return JSON.parse(localStorage.getItem(this.KEY)) || []; } catch { return []; }
+  },
+  clear() { localStorage.removeItem(this.KEY); },
+};
+
+// ── Demo Mode sample data ─────────────────────────────
+const DEMO_USER = {
+  uid: "demo_user", name: "Amaka (Demo)", email: "demo@recordchief.app",
+  phone: "08012345678", location: "Lagos Island", sectors: ["shop","farm","sales"],
+  role: "owner", emailVerified: true,
+};
+const DEMO_INVENTORY = [
+  { id:"d1", name:"Indomie Noodles (ctn)", price:4500, stock:24, createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d2", name:"Sunflower Oil 1L",      price:2800, stock:3,  createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d3", name:"Peak Milk (tin)",        price:1800, stock:0,  createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d4", name:"Golden Morn 1kg",        price:1500, stock:15, createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d5", name:"Semovita 2kg",           price:3200, stock:8,  createdAt:"2026-03-01T08:00:00Z" },
+];
+const DEMO_SALES = [
+  { id:"s1", itemId:"d1", itemName:"Indomie Noodles (ctn)", qty:2, price:4500, total:9000,  date:new Date().toISOString().split("T")[0], createdAt:new Date().toISOString() },
+  { id:"s2", itemId:"d4", itemName:"Golden Morn 1kg",       qty:3, price:1500, total:4500,  date:new Date().toISOString().split("T")[0], createdAt:new Date().toISOString() },
+  { id:"s3", itemId:"d5", itemName:"Semovita 2kg",          qty:1, price:3200, total:3200,  date:new Date(Date.now()-86400000).toISOString().split("T")[0], createdAt:new Date(Date.now()-86400000).toISOString() },
+];
+const DEMO_FARM = [
+  { id:"f1", desc:"Fertilizer purchase",  amount:15000, cat:"Inputs",    date:"2026-03-05", createdAt:"2026-03-05T09:00:00Z" },
+  { id:"f2", desc:"Labour — planting",    amount:8000,  cat:"Labour",    date:"2026-03-08", createdAt:"2026-03-08T09:00:00Z" },
+  { id:"f3", desc:"Irrigation pump fuel", amount:5500,  cat:"Equipment", date:"2026-03-12", createdAt:"2026-03-12T09:00:00Z" },
+];
+const DEMO_DEBT = [
+  { id:"dbt1", type:"credit", name:"Chinedu Obi",  amount:12000, paid:5000,  dueDate:"2026-04-10", settled:false, note:"Goods bought on credit", createdAt:"2026-03-01T09:00:00Z" },
+  { id:"dbt2", type:"debt",   name:"Emeka Supplies",amount:8500, paid:8500,  dueDate:"2026-03-15", settled:true,  note:"Delivery fee owed",      createdAt:"2026-02-20T09:00:00Z" },
+  { id:"dbt3", type:"credit", name:"Ngozi Fashion", amount:6000, paid:0,     dueDate:new Date(Date.now()-86400000*2).toISOString().split("T")[0], settled:false, note:"3 wrappers sold on credit", createdAt:"2026-03-10T09:00:00Z" },
+];
+const DEMO_SALES_ENTRIES = [
+  { id:"se1", f_date:"2026-03-18", f_name:"Taiwo Bakery", f_phone:"08056781234", f_product:"Flour (50kg bag)", f_amount:"22000", f_notes:"Regular customer, weekly order", createdAt:"2026-03-18T10:00:00Z" },
+  { id:"se2", f_date:"2026-03-20", f_name:"Bello Farms",  f_phone:"07041235678", f_product:"Semovita x10",     f_amount:"32000", f_notes:"Bulk discount applied",          createdAt:"2026-03-20T10:00:00Z" },
+];
+
+function loadDemoData() {
+  const uid = DEMO_USER.uid;
+  localStorage.setItem(`sl_inv_${uid}`,          JSON.stringify(DEMO_INVENTORY));
+  localStorage.setItem(`sl_shopsales_${uid}`,    JSON.stringify(DEMO_SALES));
+  localStorage.setItem(`sl_farm_${uid}`,         JSON.stringify(DEMO_FARM));
+  localStorage.setItem(`sl_debt_${uid}`,         JSON.stringify(DEMO_DEBT));
+  localStorage.setItem(`sl_sales_${uid}`,        JSON.stringify(DEMO_SALES_ENTRIES));
+  localStorage.setItem(`sl_sales_fields_${uid}`, JSON.stringify(null));
+  localStorage.setItem("rc_demo_mode",           "1");
+}
+function clearDemoData() {
+  const uid = DEMO_USER.uid;
+  ["sl_inv_","sl_shopsales_","sl_farm_","sl_debt_","sl_sales_","sl_sales_fields_"].forEach(k => localStorage.removeItem(k+uid));
+  localStorage.removeItem("rc_demo_mode");
+}
+
 function WelcomeScreen({ onNavigate }) {
   return (
     <div className="welcome-screen" style={{ justifyContent: "center", padding: "2rem 1.5rem" }}>
       {/* Logo + branding */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 32 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28 }}>
         <div style={{ width: 88, height: 88, borderRadius: 26, background: "rgba(255,255,255,0.15)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 46, marginBottom: 20, boxShadow: "0 8px 32px rgba(0,0,0,0.2)" }}>📒</div>
         <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px", marginBottom: 8 }}>Record Chief</div>
         <div style={{ fontSize: 14, opacity: 0.75, textAlign: "center", maxWidth: 260, lineHeight: 1.7 }}>
           Track sales, inventory, farm expenses & more — built for Nigerian businesses.
         </div>
-        {/* Feature pills */}
-        <div style={{ display: "flex", gap: 8, marginTop: 20, flexWrap: "wrap", justifyContent: "center" }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 18, flexWrap: "wrap", justifyContent: "center" }}>
           {["🏪 Shop Sales", "🌾 Farm Records", "🤝 Debt Tracker", "💼 Sales Rep"].map(f => (
             <span key={f} style={{ background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 20, padding: "5px 12px", fontSize: 11, fontWeight: 600 }}>{f}</span>
           ))}
         </div>
       </div>
 
-      {/* Action card — centred, not snapped to bottom */}
-      <div style={{
-        background: "#fff", borderRadius: 24, padding: "28px 24px 28px",
-        width: "100%", maxWidth: 380,
-        boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
-      }}>
+      <div style={{ background: "#fff", borderRadius: 24, padding: "28px 24px", width: "100%", maxWidth: 380, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ fontSize: 19, fontWeight: 800, color: COLORS.text, marginBottom: 4 }}>Get Started</div>
-        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 22 }}>Join thousands of Nigerian business owners</div>
-        <button className="btn btn-primary" style={{ marginBottom: 12, fontSize: 15, padding: "13px" }} onClick={() => onNavigate("signup")}>
-          Create Free Account
+        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 20 }}>Join thousands of Nigerian business owners</div>
+
+        <button className="btn btn-primary" style={{ marginBottom: 10, fontSize: 15, padding: "13px" }} onClick={() => onNavigate("signup")}>
+          🚀 Create Free Account
         </button>
         <button onClick={() => onNavigate("login")} style={{
           width: "100%", padding: "13px", border: `1.5px solid ${COLORS.border}`, borderRadius: 9,
           background: "transparent", color: COLORS.text, fontWeight: 600, fontSize: 15,
-          cursor: "pointer", fontFamily: "'Inter', sans-serif",
+          cursor: "pointer", fontFamily: "'Inter', sans-serif", marginBottom: 10,
         }}>Log In</button>
-        <div style={{ textAlign: "center", marginTop: 16, fontSize: 11, color: COLORS.textLight }}>
+
+        {/* Demo Mode button */}
+        <button onClick={() => onNavigate("demo")} style={{
+          width: "100%", padding: "11px", border: "none", borderRadius: 9,
+          background: "linear-gradient(135deg, #7C3AED, #5B21B6)",
+          color: "#fff", fontWeight: 700, fontSize: 14,
+          cursor: "pointer", fontFamily: "'Inter', sans-serif",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}>
+          <span>🎮</span> Try Demo — No Account Needed
+        </button>
+
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 11, color: COLORS.textLight }}>
           Free forever · No credit card required
         </div>
       </div>
@@ -823,25 +966,44 @@ const AuthAPI = {
     const token = localStorage.getItem("rc_token");
     if (!token || !navigator.onLine) return;
     try {
+      // Read from IDB first, fall back to localStorage
+      const read = async (lsKey) => {
+        const idbVal = await IDB.get(lsKey);
+        if (idbVal !== undefined) return idbVal;
+        const raw = localStorage.getItem(lsKey);
+        return raw ? JSON.parse(raw) : null;
+      };
+
+      const [inv, sales, farm, entries, fields, debt] = await Promise.all([
+        read(`sl_inv_${uid}`),
+        read(`sl_shopsales_${uid}`),
+        read(`sl_farm_${uid}`),
+        read(`sl_sales_${uid}`),
+        read(`sl_sales_fields_${uid}`),
+        read(`sl_debt_${uid}`),
+      ]);
+
+      // Low-bandwidth: only send if there's actual data
       const payload = {
-        inventory:    JSON.parse(localStorage.getItem(`sl_inv_${uid}`)          || "[]"),
-        shopSales:    JSON.parse(localStorage.getItem(`sl_shopsales_${uid}`)    || "[]"),
-        farmExpenses: JSON.parse(localStorage.getItem(`sl_farm_${uid}`)         || "[]"),
-        salesEntries: JSON.parse(localStorage.getItem(`sl_sales_${uid}`)        || "[]"),
-        salesFields:  JSON.parse(localStorage.getItem(`sl_sales_fields_${uid}`) || "null"),
-        debtRecords:  JSON.parse(localStorage.getItem(`sl_debt_${uid}`)         || "[]"),
+        inventory:    inv    || [],
+        shopSales:    sales  || [],
+        farmExpenses: farm   || [],
+        salesEntries: entries|| [],
+        salesFields:  fields || null,
+        debtRecords:  debt   || [],
         settings: {
           sector:   localStorage.getItem("sl_sector"),
           darkMode: localStorage.getItem("sl_darkmode"),
-          sectors:  localStorage.getItem(`sl_user`) ? JSON.parse(localStorage.getItem("sl_user") || "{}").sectors : null,
         },
+        clientTs: new Date().toISOString(),
       };
+
       await fetch(`${API_URL}/api/data`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload),
       });
-    } catch(e) { /* silent — data safe in localStorage */ }
+    } catch(e) { /* silent — data safe locally */ }
   },
 
   // Pull ALL data from server and restore to localStorage — triggers UI refresh
@@ -858,42 +1020,63 @@ const AuthAPI = {
 
       let changed = false;
 
-      // SAFE apply: only replace local data with server data if server has MORE records
-      // This prevents an empty server from wiping locally-added data
-      const safeApply = (key, serverVal) => {
+      // Write to IDB and localStorage together
+      const persist = async (key, val) => {
+        localStorage.setItem(key, JSON.stringify(val));
+        await IDB.set(key, val);
+      };
+
+      const safeApply = async (key, serverVal, label) => {
         if (serverVal === undefined || serverVal === null) return;
         try {
-          const localRaw = localStorage.getItem(key);
-          const localVal = localRaw ? JSON.parse(localRaw) : null;
-
-          // For arrays: keep whichever has more records
-          if (Array.isArray(serverVal) && Array.isArray(localVal)) {
-            if (serverVal.length === 0 && localVal.length > 0) return; // never overwrite with empty
-            if (serverVal.length < localVal.length) return; // server is behind, keep local
+          // Read from IDB first, fall back to localStorage
+          let localVal = await IDB.get(key);
+          if (localVal === undefined) {
+            const raw = localStorage.getItem(key);
+            localVal = raw ? JSON.parse(raw) : null;
           }
 
-          // For non-arrays or if server has more: apply server data
+          if (Array.isArray(serverVal) && Array.isArray(localVal)) {
+            if (serverVal.length === 0 && localVal.length > 0) {
+              // Server is empty but local has data — keep local, log conflict
+              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:0, reason:"Server returned empty array" });
+              return;
+            }
+            if (serverVal.length < localVal.length) {
+              // Server has fewer records — local is ahead, keep local
+              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:serverVal.length, reason:"Local has more records" });
+              return;
+            }
+            if (serverVal.length > localVal.length) {
+              // Server has more — apply server data (another device added records)
+              SyncLog.add({ type:"applied_server", label, localCount:localVal.length, serverCount:serverVal.length, reason:"Server has newer data" });
+            }
+          }
+
           const str = JSON.stringify(serverVal);
-          if (localRaw !== str) {
-            localStorage.setItem(key, str);
+          const localStr = JSON.stringify(localVal);
+          if (localStr !== str) {
+            await persist(key, serverVal);
             changed = true;
           }
         } catch(e) {}
       };
 
-      safeApply(`sl_inv_${uid}`,          data.inventory);
-      safeApply(`sl_shopsales_${uid}`,    data.shopSales);
-      safeApply(`sl_farm_${uid}`,         data.farmExpenses);
-      safeApply(`sl_sales_${uid}`,        data.salesEntries);
-      safeApply(`sl_sales_fields_${uid}`, data.salesFields);
-      safeApply(`sl_debt_${uid}`,         data.debtRecords);
+      await Promise.all([
+        safeApply(`sl_inv_${uid}`,          data.inventory,    "Inventory"),
+        safeApply(`sl_shopsales_${uid}`,    data.shopSales,    "Shop Sales"),
+        safeApply(`sl_farm_${uid}`,         data.farmExpenses, "Farm Expenses"),
+        safeApply(`sl_sales_${uid}`,        data.salesEntries, "Customer Records"),
+        safeApply(`sl_sales_fields_${uid}`, data.salesFields,  "Sales Fields"),
+        safeApply(`sl_debt_${uid}`,         data.debtRecords,  "Debt Records"),
+      ]);
 
-      // Settings — always apply
       if (data.settings?.darkMode !== undefined) {
         localStorage.setItem("sl_darkmode", data.settings.darkMode);
       }
 
-      // Fire re-render event if anything changed
+      localStorage.setItem("rc_last_sync", new Date().toISOString());
+
       if (changed) {
         window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
       }
@@ -906,6 +1089,76 @@ const AuthAPI = {
 };
 
 
+
+
+// ===================== SECTOR TOUR CARDS =====================
+const SECTOR_TOURS = {
+  shop: {
+    tagline: "Record a sale in 3 taps",
+    steps: ["Tap + → Record Sale", "Pick item & quantity", "Sale saved instantly ✅"],
+    gradient: "linear-gradient(135deg,#1E40AF,#2563EB)",
+  },
+  farm: {
+    tagline: "Log any farm expense in seconds",
+    steps: ["Tap + → Add Expense", "Enter amount & category", "See spend by category 📊"],
+    gradient: "linear-gradient(135deg,#065F46,#059669)",
+  },
+  sales: {
+    tagline: "Track every customer & deal",
+    steps: ["Create custom fields", "Add a customer record", "Search & export anytime 📤"],
+    gradient: "linear-gradient(135deg,#5B21B6,#7C3AED)",
+  },
+};
+
+function SectorTourCards({ selectedSectors, toggleSector }) {
+  const [expanded, setExpanded] = useState(null);
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:16 }}>
+      {ALL_SECTORS.map(s => {
+        const active = selectedSectors.includes(s.id);
+        const tour   = SECTOR_TOURS[s.id];
+        const isOpen = expanded === s.id;
+        return (
+          <div key={s.id} style={{ borderRadius:14, overflow:"hidden", border:active ? `2px solid ${s.borderColor}` : `1.5px solid ${COLORS.border}`, transition:"all 0.18s", background:active ? s.color : COLORS.surface }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 14px", cursor:"pointer" }}
+              onClick={() => toggleSector(s.id)}>
+              <div style={{ width:44, height:44, borderRadius:10, background:s.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>{s.icon}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:COLORS.text }}>{s.label}</div>
+                <div style={{ fontSize:11, color:COLORS.textMuted, marginTop:1 }}>{s.desc}</div>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+                <button onClick={e => { e.stopPropagation(); setExpanded(isOpen ? null : s.id); }}
+                  style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:6, padding:"3px 8px", fontSize:10, fontWeight:700, color:COLORS.primary, cursor:"pointer", fontFamily:"'Inter',sans-serif", whiteSpace:"nowrap" }}>
+                  {isOpen ? "Hide ▲" : "Preview ▾"}
+                </button>
+                <div style={{ width:22, height:22, borderRadius:"50%", border:active ? "none" : `1.5px solid ${COLORS.border}`, background:active ? COLORS.primary : "transparent", display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.15s" }}>
+                  {active && <Icon name="check" size={13} />}
+                </div>
+              </div>
+            </div>
+            {isOpen && (
+              <div style={{ background:tour.gradient, padding:"14px 16px" }}>
+                <div style={{ fontSize:12, fontWeight:800, color:"#fff", marginBottom:10 }}>⚡ {tour.tagline}</div>
+                <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                  {tour.steps.map((step, i) => (
+                    <React.Fragment key={i}>
+                      <div style={{ flex:1, background:"rgba(255,255,255,0.15)", borderRadius:10, padding:"8px", textAlign:"center" }}>
+                        <div style={{ fontSize:10, fontWeight:600, color:"rgba(255,255,255,0.7)", marginBottom:3 }}>Step {i+1}</div>
+                        <div style={{ fontSize:11, fontWeight:700, color:"#fff", lineHeight:1.4 }}>{step}</div>
+                      </div>
+                      {i < tour.steps.length-1 && <div style={{ color:"rgba(255,255,255,0.5)", fontSize:16, flexShrink:0 }}>›</div>}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function SignupScreen({ onAuth, onNavigate }) {
   const [step, setStep] = useState(1);
@@ -961,16 +1214,14 @@ function SignupScreen({ onAuth, onNavigate }) {
   };
 
   if (step === 2) return (
-    <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "2.5rem" }}>
-      <div className="auth-card" style={{ maxWidth: 400 }}>
+    <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "2rem", paddingBottom: "2rem" }}>
+      <div className="auth-card" style={{ maxWidth: 420 }}>
         <button onClick={() => setStep(1)} style={{ background: "none", border: "none", color: COLORS.textMuted, marginBottom: 14, display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
           <Icon name="back" size={16} /> Back
         </button>
-        <div style={{ display: "flex", align: "center", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 24 }}>🗂️</span>
-        </div>
-        <div className="auth-title" style={{ marginTop: 6 }}>Pick your sectors</div>
-        <div className="auth-sub">Select all that apply — you can use multiple sectors at once. You can always change this later in your profile.</div>
+        <div style={{ fontSize: 24, marginBottom: 4 }}>🗂️</div>
+        <div className="auth-title" style={{ marginTop: 4 }}>Pick your sectors</div>
+        <div className="auth-sub">Tap a sector to see what it does — then select the ones you need.</div>
 
         {sectorError && (
           <div style={{ background: COLORS.dangerLight, color: COLORS.danger, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 12, fontWeight: 500 }}>
@@ -978,43 +1229,20 @@ function SignupScreen({ onAuth, onNavigate }) {
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
-          {ALL_SECTORS.map(s => {
-            const active = selectedSectors.includes(s.id);
-            return (
-              <div key={s.id} onClick={() => toggleSector(s.id)} style={{
-                display: "flex", alignItems: "center", gap: 14, padding: "14px 14px",
-                borderRadius: 12, cursor: "pointer", transition: "all 0.18s",
-                border: active ? `2px solid ${s.borderColor}` : `1.5px solid ${COLORS.border}`,
-                background: active ? s.color : COLORS.surface,
-              }}>
-                <div style={{ width: 44, height: 44, borderRadius: 10, background: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{s.icon}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{s.label}</div>
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>{s.desc}</div>
-                </div>
-                <div style={{
-                  width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
-                  border: active ? "none" : `1.5px solid ${COLORS.border}`,
-                  background: active ? COLORS.primary : "transparent",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  transition: "all 0.15s",
-                }}>
-                  {active && <Icon name="check" size={13} />}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        {/* Sector cards with mini-tour preview */}
+        <SectorTourCards
+          selectedSectors={selectedSectors}
+          toggleSector={toggleSector}
+        />
 
         <div style={{ background: COLORS.primaryLight, borderRadius: 8, padding: "8px 12px", fontSize: 12, color: COLORS.primary, marginBottom: 14, display: "flex", gap: 6, alignItems: "flex-start" }}>
-          <span style={{ marginTop: 1 }}>💡</span>
-          <span>You can switch between your selected sectors any time from the home screen.</span>
+          <span>💡</span>
+          <span>You can add or remove sectors any time from your profile settings.</span>
         </div>
 
         <button className="btn btn-primary" onClick={submit} disabled={loading || selectedSectors.length === 0}
           style={{ opacity: selectedSectors.length === 0 ? 0.5 : 1 }}>
-          {loading ? "Creating account…" : `Finish — ${selectedSectors.length === 0 ? "Select a sector" : `${selectedSectors.length} sector${selectedSectors.length > 1 ? "s" : ""} selected`}`}
+          {loading ? "Creating account…" : selectedSectors.length === 0 ? "Select at least one sector" : `Finish — ${selectedSectors.length} sector${selectedSectors.length > 1 ? "s" : ""} selected ✓`}
         </button>
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 12, color: COLORS.textLight }}>Step 2 of 2</div>
       </div>
@@ -4880,6 +5108,60 @@ function DeleteAccountSection({ user, onLogout }) {
   );
 }
 
+function CurrencySelector() {
+  const [cur, setCur] = useState(localStorage.getItem("sl_currency") || "NGN");
+  const [saved, setSaved] = useState(false);
+  return (
+    <div className="card" style={{ marginBottom:"0.75rem" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+        <div style={{ width:40, height:40, borderRadius:12, background:"var(--accent-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>💱</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Currency</div>
+          <div style={{ fontSize:12, color:"var(--text-muted)", marginTop:1 }}>
+            {saved ? <span style={{ color:"var(--accent)" }}>✅ Saved — restart app to see changes</span> : "Default is Nigerian Naira (₦)"}
+          </div>
+        </div>
+        <select
+          value={cur}
+          onChange={e => {
+            const v = e.target.value;
+            setCur(v);
+            localStorage.setItem("sl_currency", v);
+            setSaved(true);
+            // Fire sync event so all screens pick up new currency
+            window.dispatchEvent(new CustomEvent("rc_sync_update"));
+          }}
+          className="form-input"
+          style={{ width:"auto", padding:"6px 10px", fontSize:14, fontWeight:700 }}>
+          {Object.entries(CURRENCIES).map(([code, sym]) => (
+            <option key={code} value={code}>{sym} {code}</option>
+          ))}
+        </select>
+      </div>
+      <div style={{ marginTop:10, display:"flex", gap:6, flexWrap:"wrap" }}>
+        {Object.entries(CURRENCIES).map(([code, sym]) => (
+          <button key={code} onClick={() => {
+            setCur(code);
+            localStorage.setItem("sl_currency", code);
+            setSaved(true);
+            window.dispatchEvent(new CustomEvent("rc_sync_update"));
+          }}
+          style={{
+            padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, cursor:"pointer",
+            fontFamily:"'Inter',sans-serif",
+            background: cur === code ? "var(--primary)" : "var(--bg)",
+            color: cur === code ? "#fff" : "var(--text-muted)",
+            border: `1px solid ${cur === code ? "var(--primary)" : "var(--border)"}`,
+            transition:"all 0.15s",
+          }}>
+            {sym} {code}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfileScreen({ user, onLogout, onManageSectors }) {
   const avatarKey = `sl_avatar_${user.uid}`;
   const [editing, setEditing] = useState(false);
@@ -4985,6 +5267,10 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
         const session = localStorage.getItem("rc_session");
         if (session) localStorage.setItem("rc_session", JSON.stringify(updated));
       }} />
+      {/* Currency setting */}
+      <div className="section-title">Currency & Display</div>
+      <CurrencySelector />
+
       <div className="section-title">Privacy & Security</div>
       <div className="card" style={{ marginBottom: "0.75rem" }}>
         {(() => {
@@ -5155,6 +5441,161 @@ function OnboardingScreen({ user, onDone }) {
   );
 }
 
+
+
+// ===================== SYNC HISTORY SCREEN =====================
+function SyncHistoryScreen({ user }) {
+  const [log, setLog]           = useState(() => SyncLog.get());
+  const [showBackup, setShowBackup] = useState(false);
+  const lastSync = localStorage.getItem("rc_last_sync");
+
+  // Weekly backup prompt — show if last backup was >7 days ago
+  const lastBackupKey = `rc_last_backup_${user.uid}`;
+  const lastBackup    = localStorage.getItem(lastBackupKey);
+  const daysSinceBackup = lastBackup
+    ? Math.floor((Date.now() - new Date(lastBackup)) / 86400000)
+    : 999;
+  const showBackupPrompt = daysSinceBackup >= 7;
+
+  const downloadBackup = () => {
+    const uid = user.uid;
+    const backup = {
+      exportedAt:  new Date().toISOString(),
+      user:        { name: user.name, email: user.email, location: user.location },
+      inventory:   JSON.parse(localStorage.getItem(`sl_inv_${uid}`)       || "[]"),
+      shopSales:   JSON.parse(localStorage.getItem(`sl_shopsales_${uid}`) || "[]"),
+      farmExpenses:JSON.parse(localStorage.getItem(`sl_farm_${uid}`)      || "[]"),
+      salesEntries:JSON.parse(localStorage.getItem(`sl_sales_${uid}`)     || "[]"),
+      debtRecords: JSON.parse(localStorage.getItem(`sl_debt_${uid}`)      || "[]"),
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `RecordChief_Backup_${new Date().toISOString().split("T")[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    localStorage.setItem(lastBackupKey, new Date().toISOString());
+    setShowBackup(false);
+  };
+
+  const typeColor = { kept_local: COLORS.amber, applied_server: COLORS.accent, conflict: COLORS.danger };
+  const typeLabel = { kept_local: "⚠️ Kept Local", applied_server: "✅ Applied Server", conflict: "❌ Conflict" };
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      {/* Header */}
+      <div style={{ marginBottom: "1rem" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text)" }}>🔄 Sync History</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3 }}>
+          {lastSync ? `Last synced: ${new Date(lastSync).toLocaleString("en-NG")}` : "Not yet synced this session"}
+        </div>
+      </div>
+
+      {/* Weekly backup prompt */}
+      {showBackupPrompt && (
+        <div style={{ background: "linear-gradient(135deg, #1E3A8A, #2563EB)", borderRadius: 16, padding: "16px 18px", marginBottom: "1rem", color: "#fff" }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 5 }}>📦 Weekly Backup Due</div>
+          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 14, lineHeight: 1.6 }}>
+            {lastBackup
+              ? `Your last backup was ${daysSinceBackup} days ago. Download a fresh JSON backup of all your data.`
+              : "You haven't downloaded a local backup yet. It's a safety net in case anything goes wrong."}
+          </div>
+          <button onClick={downloadBackup} style={{
+            background: "#fff", color: "#1E3A8A", border: "none", borderRadius: 10,
+            padding: "9px 18px", fontSize: 13, fontWeight: 800, cursor: "pointer",
+            fontFamily: "'Inter', sans-serif",
+          }}>
+            💾 Download Backup Now
+          </button>
+        </div>
+      )}
+
+      {/* Manual backup card */}
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>💾</div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>Local JSON Backup</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>
+              {lastBackup ? `Last backup: ${new Date(lastBackup).toLocaleDateString("en-NG")}` : "No backup downloaded yet"}
+            </div>
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={downloadBackup}>
+          💾 Download Full Backup (.json)
+        </button>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8, lineHeight: 1.6 }}>
+          Downloads all your records as a JSON file. Store it in Google Drive or WhatsApp for safety.
+        </div>
+      </div>
+
+      {/* Sync log */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+        <div className="section-title" style={{ margin: 0 }}>Conflict Log</div>
+        {log.length > 0 && (
+          <button onClick={() => { SyncLog.clear(); setLog([]); }}
+            style={{ background: "none", border: "none", color: COLORS.danger, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      {log.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: "2rem" }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>No conflicts</div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>All syncs have been clean</div>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          {log.map((entry, i) => (
+            <div key={i} style={{
+              padding: "12px 16px",
+              borderBottom: i < log.length - 1 ? `0.5px solid var(--border)` : "none",
+              display: "flex", alignItems: "flex-start", gap: 12,
+            }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: typeColor[entry.type] || COLORS.textMuted, marginTop: 5, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: typeColor[entry.type] || "var(--text)" }}>
+                  {typeLabel[entry.type] || entry.type}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  {entry.label} — {entry.reason}
+                </div>
+                {entry.localCount !== undefined && (
+                  <div style={{ fontSize: 11, color: "var(--text-light)", marginTop: 2 }}>
+                    Local: {entry.localCount} records · Server: {entry.serverCount} records
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-light)", flexShrink: 0, marginTop: 2 }}>
+                {new Date(entry.ts).toLocaleTimeString("en-NG", { hour: "2-digit", minute: "2-digit" })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Sync info */}
+      <div className="card" style={{ marginTop: "1rem" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 10 }}>⚙️ Sync Settings</div>
+        {[
+          ["Active interval", "Push every 30s · Pull every 15s"],
+          ["Idle interval", "Push every 2min · Pull every 60s (saves battery)"],
+          ["Background", "Sync paused when app is in background"],
+          ["Conflict strategy", "Local data wins when server is behind"],
+          ["Storage", "IndexedDB (primary) · localStorage (fallback)"],
+        ].map(([k, v]) => (
+          <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `0.5px solid var(--border)` }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>{k}</span>
+            <span style={{ fontSize: 12, color: "var(--text)", textAlign: "right", maxWidth: "55%" }}>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ===================== OFFLINE INDICATOR =====================
 function OfflineIndicator() {
@@ -5371,25 +5812,57 @@ function App() {
     if (!user?.uid) return;
     const uid = user.uid;
 
-    // On login: push local then pull server
-    if (navigator.onLine) {
+    // ── Adaptive intervals ──────────────────────────────
+    // Active (user interacted in last 2 min): push 30s / pull 15s
+    // Idle  (no interaction for 2+ min):      push 2min / pull 60s
+    // Background (page hidden):               pause entirely
+    let lastActivity = Date.now();
+    let pushTimer = null;
+    let pullTimer = null;
+
+    const ACTIVE_PUSH  = 30_000;
+    const ACTIVE_PULL  = 15_000;
+    const IDLE_PUSH    = 120_000;
+    const IDLE_PULL    = 60_000;
+    const IDLE_THRESH  = 120_000; // 2 min
+
+    const isIdle = () => Date.now() - lastActivity > IDLE_THRESH;
+
+    const markActive = () => { lastActivity = Date.now(); };
+    ["click","keydown","touchstart","scroll"].forEach(ev =>
+      window.addEventListener(ev, markActive, { passive:true })
+    );
+
+    const doSync = () => {
+      if (!navigator.onLine || document.hidden) return;
       AuthAPI.syncToServer(uid).catch(() => {});
-      setTimeout(() => AuthAPI.syncFromServer(uid).catch(() => {}), 2000);
+    };
+    const doPull = () => {
+      if (!navigator.onLine || document.hidden) return;
+      AuthAPI.syncFromServer(uid).catch(() => {});
+    };
+
+    const schedulePush = () => {
+      clearTimeout(pushTimer);
+      const delay = isIdle() ? IDLE_PUSH : ACTIVE_PUSH;
+      pushTimer = setTimeout(() => { doSync(); schedulePush(); }, delay);
+    };
+    const schedulePull = () => {
+      clearTimeout(pullTimer);
+      const delay = isIdle() ? IDLE_PULL : ACTIVE_PULL;
+      pullTimer = setTimeout(() => { doPull(); schedulePull(); }, delay);
+    };
+
+    // On login: push then pull
+    if (navigator.onLine) {
+      doSync();
+      setTimeout(doPull, 2000);
     }
+    schedulePush();
+    schedulePull();
 
-    // Push local changes every 30 seconds
-    const pushInterval = setInterval(() => {
-      if (navigator.onLine) AuthAPI.syncToServer(uid).catch(() => {});
-    }, 30000);
-
-    // Pull server changes every 15 seconds (real-time across devices)
-    const pullInterval = setInterval(() => {
-      if (navigator.onLine) AuthAPI.syncFromServer(uid).catch(() => {});
-    }, 15000);
-
-    // When sync detects a change, force a re-render by toggling a state
+    // Re-render on sync update
     const handleSyncUpdate = () => {
-      // Re-read user sectors in case they changed
       const session = localStorage.getItem("rc_session");
       if (session) {
         try {
@@ -5402,18 +5875,28 @@ function App() {
 
     // Sync immediately when coming back online
     const handleOnline = () => {
-      setTimeout(() => {
-        AuthAPI.syncToServer(uid).catch(() => {});
-        setTimeout(() => AuthAPI.syncFromServer(uid).catch(() => {}), 1500);
-      }, 500);
+      setTimeout(() => { doSync(); setTimeout(doPull, 1500); }, 500);
     };
     window.addEventListener("online", handleOnline);
 
+    // Pause when tab hidden, resume when visible
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        markActive();
+        if (navigator.onLine) { doSync(); setTimeout(doPull, 1000); }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
     return () => {
-      clearInterval(pushInterval);
-      clearInterval(pullInterval);
+      clearTimeout(pushTimer);
+      clearTimeout(pullTimer);
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("rc_sync_update", handleSyncUpdate);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      ["click","keydown","touchstart","scroll"].forEach(ev =>
+        window.removeEventListener(ev, markActive)
+      );
     };
   }, [user?.uid]);
 
@@ -5590,6 +6073,12 @@ function App() {
     if (isNewSignup && !localStorage.getItem("sl_pin")) {
       setTimeout(() => setShowPinSetup(true), 1200);
     }
+    // Weekly backup nudge
+    const _lbk = `rc_last_backup_${fullUser.uid}`;
+    const _lb  = localStorage.getItem(_lbk);
+    const _days = _lb ? Math.floor((Date.now() - new Date(_lb)) / 86400000) : 999;
+    if (_days >= 7) setTimeout(() => setNavTab("synclog"), 4000);
+
     // Pull latest data from server — also refresh profile to get latest sectors
     const token = localStorage.getItem("rc_token");
     if (token) {
@@ -5637,6 +6126,46 @@ function App() {
   };
 
   if (screen === "welcome") return (<><style>{css}</style><WelcomeScreen onNavigate={setScreen} /></>);
+  if (screen === "demo") return (
+    <><style>{css}</style>
+    <div style={{ minHeight:"100vh", background:"linear-gradient(145deg,#5B21B6,#7C3AED,#4338CA)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem 1.5rem" }}>
+      <div style={{ fontSize:52, marginBottom:16 }}>🎮</div>
+      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:22, fontWeight:700, color:"#fff", marginBottom:8 }}>Demo Mode</div>
+      <div style={{ fontSize:14, color:"rgba(255,255,255,0.75)", textAlign:"center", maxWidth:280, lineHeight:1.7, marginBottom:28 }}>
+        Explore Record Chief with sample business data — no account needed. Changes won't be saved.
+      </div>
+      <div style={{ background:"#fff", borderRadius:20, padding:"20px", width:"100%", maxWidth:360 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:COLORS.text, marginBottom:14 }}>What you'll explore:</div>
+        {[
+          ["🏪","Shop Sales","See a shop with 5 products, today's sales, and stock alerts"],
+          ["🌾","Farm Records","View farm expenses across seeds, labour, and equipment"],
+          ["🤝","Debt & Credit","See outstanding credits, overdue amounts, and settled records"],
+          ["💼","Customer Records","Browse sample customer entries with custom fields"],
+        ].map(([icon,title,desc]) => (
+          <div key={title} style={{ display:"flex", gap:12, marginBottom:14 }}>
+            <div style={{ fontSize:22, flexShrink:0 }}>{icon}</div>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:COLORS.text }}>{title}</div>
+              <div style={{ fontSize:11, color:COLORS.textMuted, marginTop:2, lineHeight:1.5 }}>{desc}</div>
+            </div>
+          </div>
+        ))}
+        <button className="btn btn-primary" style={{ marginBottom:10, background:"linear-gradient(135deg,#7C3AED,#5B21B6)" }}
+          onClick={() => {
+            loadDemoData();
+            setUser(DEMO_USER);
+            setSector("shop");
+            setScreen("app");
+          }}>
+          🚀 Launch Demo
+        </button>
+        <button onClick={() => setScreen("welcome")} style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:"8px" }}>
+          ← Back to Welcome
+        </button>
+      </div>
+    </div>
+    </>
+  );
   if (screen === "signup") return (<><style>{css}</style><SignupScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
   if (screen === "login") return (<><style>{css}</style><LoginScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
 
@@ -5749,6 +6278,13 @@ function App() {
     <>
       <style>{css}</style>
       <OfflineIndicator />
+      {/* Demo mode banner */}
+      {localStorage.getItem("rc_demo_mode") === "1" && (
+        <div style={{ background:"linear-gradient(135deg,#7C3AED,#5B21B6)", color:"#fff", fontSize:12, fontWeight:700, padding:"8px 16px", textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
+          <span>🎮 Demo Mode — data is not saved</span>
+          <button onClick={() => { clearDemoData(); setUser(null); setScreen("welcome"); }} style={{ background:"rgba(255,255,255,0.25)", border:"none", color:"#fff", borderRadius:6, padding:"3px 10px", fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif", fontWeight:700 }}>Exit Demo</button>
+        </div>
+      )}
       <div className="app">
 
         {/* ── SIDEBAR ── */}
@@ -5769,7 +6305,10 @@ function App() {
             <Icon name="home" size={16} /><span className="nav-label">Home</span>
           </button>
           <button className="nav-tab" onClick={() => { setNavTab("history"); setSidebarOpen(false); }} title="Overview" style={navTab === "history" ? activeNavStyle : {}}>
-            <Icon name="history" size={16} /><span className="nav-label">Overview</span>
+            <Icon name="chart" size={16} /><span className="nav-label">Overview</span>
+          </button>
+          <button className="nav-tab" onClick={() => { setNavTab("synclog"); setSidebarOpen(false); }} title="Sync & Backup" style={navTab === "synclog" ? activeNavStyle : {}}>
+            <Icon name="history" size={16} /><span className="nav-label">Sync</span>
           </button>
 
           {activeSectors.length > 0 && <div className="sidebar-section">Sectors</div>}
