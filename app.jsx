@@ -3,6 +3,15 @@ const { useState, useEffect, useCallback, useRef } = React;
 const CURRENCIES = { NGN:"₦", USD:"$", GBP:"£", EUR:"€", GHS:"₵", KES:"KSh", ZAR:"R" };
 const getCurrency = () => localStorage.getItem("sl_currency") || "NGN";
 const getCurrencySymbol = () => CURRENCIES[getCurrency()] || "₦";
+// Polyfill Promise.allSettled for Android 6 Chrome
+if (typeof Promise.allSettled !== 'function') {
+  Promise.allSettled = (promises) =>
+    Promise.all(promises.map(p => Promise.resolve(p).then(
+      value => ({ status: 'fulfilled', value }),
+      reason => ({ status: 'rejected', reason })
+    )));
+}
+
 const NAIRA = (n) => `${getCurrencySymbol()}${Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 const TODAY = () => new Date().toISOString().split("T")[0];
 const TS = () => new Date().toISOString();
@@ -80,7 +89,10 @@ const css = `
     --purple-light: #1E1535;
     --card-shadow: 0 1px 3px rgba(0,0,0,0.4);
   }
-  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); transition: background 0.2s, color 0.2s; }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); transition: background 0.2s, color 0.2s; -webkit-text-size-adjust: 100%; }
+  /* Android 6 touch feedback */
+  * { -webkit-tap-highlight-color: transparent; }
+  input, textarea, select { -webkit-appearance: none; }
   input, select, textarea { font-family: 'Inter', sans-serif; }
   button { cursor: pointer; font-family: 'Inter', sans-serif; }
 
@@ -670,8 +682,11 @@ const IDB = (() => {
 
   const open = () => new Promise((res, rej) => {
     if (_db) return res(_db);
-    if (!window.indexedDB) return rej(new Error("IDB not available"));
-    const req = indexedDB.open(DB_NAME, DB_VER);
+    if (!window.indexedDB && !window.mozIndexedDB && !window.webkitIndexedDB) {
+        return rej(new Error("IDB not available"));
+      }
+      const idb = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB;
+    const req = (window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB).open(DB_NAME, DB_VER);
     req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
     req.onsuccess = e => { _db = e.target.result; res(_db); };
     req.onerror   = e => rej(e.target.error);
@@ -893,15 +908,21 @@ const AuthAPI = {
 
     // Try online first with a short timeout
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
+      // AbortController with fallback for Android 6 / old browsers
+      let signal = undefined;
+      let timeout = null;
+      if (typeof AbortController !== "undefined") {
+        const controller = new AbortController();
+        signal = controller.signal;
+        timeout = setTimeout(() => controller.abort(), 6000);
+      }
       const res = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-        signal: controller.signal,
+        ...(signal ? { signal } : {}),
       });
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       const data = await res.json();
       if (!res.ok) return { ok: false, error: data.error || "Login failed." };
       const user = { ...data.user, uid: data.user._id };
@@ -5791,6 +5812,7 @@ function App() {
   const [user, setUser] = useLocalState("sl_user", null);
   const [sector, setSector] = useLocalState("sl_sector", "shop");
   const [navTab, setNavTab] = useState("home");
+  const [navHistory, setNavHistory] = useState(["home"]); // back stack
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
@@ -5806,6 +5828,41 @@ function App() {
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  // ── Back button / Android back gesture handler ──────────────
+  useEffect(() => {
+    // Push initial state so back button has somewhere to return to
+    window.history.pushState({ screen: "app", navTab: "home" }, "");
+
+    const handlePopState = (e) => {
+      // If not in app, let browser handle it
+      if (screen !== "app") return;
+
+      // If there's internal nav history, go back within the app
+      setNavHistory(prev => {
+        if (prev.length > 1) {
+          const newHistory = prev.slice(0, -1);
+          const prevTab = newHistory[newHistory.length - 1];
+          setNavTab(prevTab);
+          // Re-push state so there's always something to pop
+          window.history.pushState({ screen: "app", navTab: prevTab }, "");
+          return newHistory;
+        }
+        // Already at home — go to home if not there
+        if (navTab !== "home") {
+          setNavTab("home");
+          window.history.pushState({ screen: "app", navTab: "home" }, "");
+          return ["home"];
+        }
+        // At home — push state again to prevent exit on first press
+        window.history.pushState({ screen: "app", navTab: "home" }, "");
+        return prev;
+      });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [screen, navTab]);
 
   // Real-time sync — push changes every 30s, pull latest every 15s
   useEffect(() => {
@@ -5953,6 +6010,25 @@ function App() {
 
   // Close sector switcher when navigating away
   useEffect(() => { setShowSectorSwitcher(false); }, [navTab]);
+
+  // Track navTab changes to build back stack for Android back button
+  const prevNavTabRef = useRef(null);
+  useEffect(() => {
+    if (!user) return; // don't track pre-login navigation
+    const prev = prevNavTabRef.current;
+    if (prev !== null && prev !== navTab) {
+      // Push new entry to history
+      window.history.pushState({ screen: "app", navTab }, "");
+      setNavHistory(h => {
+        // Don't duplicate consecutive same tabs
+        if (h[h.length - 1] === navTab) return h;
+        // Limit stack to 20 entries
+        const next = [...h, navTab].slice(-20);
+        return next;
+      });
+    }
+    prevNavTabRef.current = navTab;
+  }, [navTab, user]);
 
   useEffect(() => {
     // Mobile PWA hints
