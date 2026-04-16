@@ -998,7 +998,27 @@ const AuthAPI = {
       const [inv, sales, farm, entries, fields, debt] = await Promise.all([
         read(`sl_inv_${uid}`),
         read(`sl_shopsales_${uid}`),
-        read(`sl_farm_${uid}`),
+        // Read all farm expenses (multi-farm: merge all farm-specific keys)
+        (async () => {
+          const farmsKey = `sl_farms_${uid}`;
+          let farms = await IDB.get(farmsKey);
+          if (!farms) { const r = localStorage.getItem(farmsKey); farms = r ? JSON.parse(r) : null; }
+          if (farms && farms.length > 0) {
+            const allExp = [];
+            for (const f of farms) {
+              const fkey = `sl_farm_${uid}_${f.id}`;
+              let fe = await IDB.get(fkey);
+              if (!fe) { const r = localStorage.getItem(fkey); fe = r ? JSON.parse(r) : []; }
+              allExp.push(...(fe || []));
+            }
+            return allExp;
+          }
+          // Legacy single-farm key fallback
+          const r = await IDB.get(`sl_farm_${uid}`);
+          if (r !== undefined) return r;
+          const raw = localStorage.getItem(`sl_farm_${uid}`);
+          return raw ? JSON.parse(raw) : [];
+        })(),
         read(`sl_sales_${uid}`),
         read(`sl_sales_fields_${uid}`),
         read(`sl_debt_${uid}`),
@@ -1017,6 +1037,13 @@ const AuthAPI = {
           darkMode: localStorage.getItem("sl_darkmode"),
         },
         clientTs: new Date().toISOString(),
+        // Include farm structure for multi-farm support
+        farmStructure: (() => {
+          try {
+            const fk = `sl_farms_${uid}`;
+            return JSON.parse(localStorage.getItem(fk)) || null;
+          } catch { return null; }
+        })(),
       };
 
       await fetch(`${API_URL}/api/data`, {
@@ -1050,33 +1077,35 @@ const AuthAPI = {
       const safeApply = async (key, serverVal, label) => {
         if (serverVal === undefined || serverVal === null) return;
         try {
-          // Read from IDB first, fall back to localStorage
           let localVal = await IDB.get(key);
           if (localVal === undefined) {
             const raw = localStorage.getItem(key);
             localVal = raw ? JSON.parse(raw) : null;
           }
 
+          // Only skip if server sends empty AND local has data
+          // (protects against accidental wipe — e.g. Railway cold start)
           if (Array.isArray(serverVal) && Array.isArray(localVal)) {
             if (serverVal.length === 0 && localVal.length > 0) {
-              // Server is empty but local has data — keep local, log conflict
-              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:0, reason:"Server returned empty array" });
+              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:0, reason:"Server empty, kept local" });
               return;
-            }
-            if (serverVal.length < localVal.length) {
-              // Server has fewer records — local is ahead, keep local
-              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:serverVal.length, reason:"Local has more records" });
-              return;
-            }
-            if (serverVal.length > localVal.length) {
-              // Server has more — apply server data (another device added records)
-              SyncLog.add({ type:"applied_server", label, localCount:localVal.length, serverCount:serverVal.length, reason:"Server has newer data" });
             }
           }
 
-          const str = JSON.stringify(serverVal);
-          const localStr = JSON.stringify(localVal);
-          if (localStr !== str) {
+          // Compare by content — if different, server wins
+          // (most recent push wins — whoever pushed last has the truth)
+          const serverStr = JSON.stringify(serverVal);
+          const localStr  = JSON.stringify(localVal);
+          if (localStr !== serverStr) {
+            if (Array.isArray(serverVal) && Array.isArray(localVal) && serverVal.length !== localVal.length) {
+              SyncLog.add({
+                type: serverVal.length > localVal.length ? "applied_server" : "applied_server",
+                label,
+                localCount: localVal.length,
+                serverCount: serverVal.length,
+                reason: "Server data applied"
+              });
+            }
             await persist(key, serverVal);
             changed = true;
           }
@@ -2901,17 +2930,10 @@ function ShopScreen({ user }) {
 const FARM_CATS = ["Seeds", "Fertilizer", "Labor", "Transport", "Equipment", "Others"];
 
 function FarmScreen({ user }) {
-  // ── Farm green palette ──
   const FG = {
-    dark:    "#1B4332",
-    main:    "#2D6A4F",
-    mid:     "#40916C",
-    light:   "#74C69D",
-    pale:    "#D8F3DC",
-    surface: "#F0FAF4",
-    border:  "#B7E4C7",
+    dark: "#1B4332", main: "#2D6A4F", mid: "#40916C",
+    light: "#74C69D", pale: "#D8F3DC", surface: "#F0FAF4", border: "#B7E4C7",
   };
-
   const catMeta = {
     Seeds:      { icon: "🌱", bg: "#E9F5DB", color: "#386641" },
     Fertilizer: { icon: "🧪", bg: "#EAF4FB", color: "#1B6CA8" },
@@ -2921,201 +2943,243 @@ function FarmScreen({ user }) {
     Others:     { icon: "📦", bg: "#F4F6FA", color: "#6B7280" },
   };
 
-  const key = `sl_farm_${user.uid}`;
-  const [expenses, setExpenses] = useLocalState(key, []);
-  const [form, setForm] = useState({ date: TODAY(), desc: "", amount: "", category: "" });
+  // ── Multi-farm: farms list stored separately ──
+  const farmsKey    = `sl_farms_${user.uid}`;
+  const expKey      = (fid) => `sl_farm_${user.uid}_${fid}`;
+  const legacyKey   = `sl_farm_${user.uid}`;  // old single-farm key
+
+  const [farms, setFarms]   = useLocalState(farmsKey, null);
+  const [activeFarm, setActiveFarm] = useState(null);
+  const [expenses, setExpenses]     = useState([]);
+  const [showFarmMgr, setShowFarmMgr] = useState(false);
+  const [newFarmName, setNewFarmName] = useState("");
+  const [form, setForm]     = useState({ date: TODAY(), desc: "", amount: "", category: "Others" });
   const [errors, setErrors] = useState({});
   const [search, setSearch] = useState("");
-  const [toast, setToast] = useState(null);
-  const [showForm, setShowForm] = useState(false);
+  const [toast, setToast]   = useState(null);
+  const [showForm, setShowForm]   = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [filterCat, setFilterCat] = useState("All");
 
   const showToast = (msg, type = "success") => setToast({ msg, type });
 
-  const now = new Date();
-  const thisMonth = expenses.filter(e => e.date.startsWith(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`));
-  const thisYear  = expenses.filter(e => e.date.startsWith(`${now.getFullYear()}`));
+  // ── Migrate legacy single-farm data on first load ──
+  useEffect(() => {
+    let initialFarms = farms;
+    if (!initialFarms) {
+      // First time — check if there's legacy data
+      const legacyData = (() => { try { return JSON.parse(localStorage.getItem(legacyKey)) || []; } catch { return []; } })();
+      const firstFarm = { id: uid(), name: "My Farm", createdAt: TS() };
+      initialFarms = [firstFarm];
+      setFarms(initialFarms);
+      if (legacyData.length > 0) {
+        // Migrate old data to new farm-specific key
+        localStorage.setItem(expKey(firstFarm.id), JSON.stringify(legacyData));
+      }
+    }
+    if (initialFarms.length > 0 && !activeFarm) {
+      setActiveFarm(initialFarms[0].id);
+    }
+  }, []);
+
+  // ── Load expenses when active farm changes ──
+  useEffect(() => {
+    if (!activeFarm) return;
+    const raw = (() => { try { return JSON.parse(localStorage.getItem(expKey(activeFarm))) || []; } catch { return []; } })();
+    setExpenses(raw);
+  }, [activeFarm]);
+
+  // ── Persist expenses to localStorage whenever they change ──
+  useEffect(() => {
+    if (!activeFarm) return;
+    localStorage.setItem(expKey(activeFarm), JSON.stringify(expenses));
+    // Also write to legacy key for backward compat with sync
+    const allExp = (farms || []).flatMap(f => {
+      const k = expKey(f.id);
+      try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; }
+    });
+    localStorage.setItem(legacyKey, JSON.stringify(allExp));
+  }, [expenses, activeFarm]);
+
+  const addFarm = () => {
+    const name = newFarmName.trim();
+    if (!name) return;
+    const newF = { id: uid(), name, createdAt: TS() };
+    const updated = [...(farms || []), newF];
+    setFarms(updated);
+    setActiveFarm(newF.id);
+    setNewFarmName("");
+    setShowFarmMgr(false);
+    showToast(`"${name}" farm created!`);
+  };
+
+  const deleteFarm = (fid) => {
+    if ((farms || []).length <= 1) { showToast("Cannot delete your only farm", "error"); return; }
+    if (!window.confirm("Delete this farm and all its expenses?")) return;
+    localStorage.removeItem(expKey(fid));
+    const updated = (farms || []).filter(f => f.id !== fid);
+    setFarms(updated);
+    setActiveFarm(updated[0]?.id || null);
+    showToast("Farm deleted", "error");
+  };
 
   const saveExpense = () => {
     const e = {};
     if (!form.desc.trim()) e.desc = "Description is required";
     if (!form.amount || isNaN(form.amount) || parseFloat(form.amount) <= 0) e.amount = "Enter a valid amount";
     if (Object.keys(e).length) { setErrors(e); return; }
-    const exp = { id: uid(), ...form, amount: parseFloat(form.amount), createdAt: TS() };
+    const exp = { id: uid(), ...form, amount: parseFloat(form.amount), farmId: activeFarm, createdAt: TS() };
     setExpenses(prev => [exp, ...prev]);
-    setForm({ date: TODAY(), desc: "", amount: "", category: "" });
+    setForm({ date: TODAY(), desc: "", amount: "", category: form.category });
     setErrors({});
     setShowForm(false);
-    showToast("Expenditure saved!");
+    showToast("Expense saved!");
   };
 
-  const deleteExpense = (id) => { setExpenses(prev => prev.filter(e => e.id !== id)); showToast("Deleted", "error"); };
+  const deleteExpense = (id) => {
+    setExpenses(prev => prev.filter(e => e.id !== id));
+    showToast("Deleted", "error");
+  };
 
+  const currentFarm = (farms || []).find(f => f.id === activeFarm);
   const filtered = expenses.filter(e => {
     const matchSearch = !search || e.desc.toLowerCase().includes(search.toLowerCase()) || e.date.includes(search);
-    const matchCat = filterCat === "All" || e.category === filterCat;
+    const matchCat    = filterCat === "All" || e.category === filterCat;
     return matchSearch && matchCat;
   });
 
+  const totalSpend = expenses.reduce((a, e) => a + e.amount, 0);
+  const now        = new Date();
+  const thisMonth  = expenses.filter(e => e.date.startsWith(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`));
+  const monthTotal = thisMonth.reduce((a, e) => a + e.amount, 0);
+
+  const byCategory = Object.entries(
+    expenses.reduce((acc, e) => { const c = e.category || "Others"; acc[c] = (acc[c] || 0) + e.amount; return acc; }, {})
+  ).sort((a, b) => b[1] - a[1]);
+
   return (
-    <div style={{ background: FG.surface, minHeight: "100%" }}>
+    <div style={{ background: "var(--bg)", minHeight: "100%", paddingBottom: 16 }}>
+
+      {/* ── Farm selector bar ── */}
+      <div style={{ marginBottom: "0.85rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, overflowX: "auto", paddingBottom: 4, scrollbarWidth: "none" }}>
+          {(farms || []).map(f => (
+            <button key={f.id} onClick={() => { setActiveFarm(f.id); setSearch(""); setFilterCat("All"); }}
+              style={{
+                flexShrink: 0, padding: "8px 16px", borderRadius: 20, border: "none", cursor: "pointer",
+                fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 700,
+                background: activeFarm === f.id ? `linear-gradient(135deg, ${FG.dark}, ${FG.main})` : "var(--surface)",
+                color: activeFarm === f.id ? "#fff" : "var(--text)",
+                boxShadow: activeFarm === f.id ? `0 3px 12px ${FG.main}55` : "none",
+                border: activeFarm !== f.id ? `1px solid var(--border)` : "none",
+              }}>
+              🌾 {f.name}
+            </button>
+          ))}
+          <button onClick={() => setShowFarmMgr(true)}
+            style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 20, border: `1.5px dashed ${FG.mid}`, background: "transparent", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 700, color: FG.mid, whiteSpace: "nowrap" }}>
+            + Add Farm
+          </button>
+        </div>
+      </div>
+
       {/* ── Hero banner ── */}
       <div style={{
         background: `linear-gradient(135deg, ${FG.dark} 0%, ${FG.main} 60%, ${FG.mid} 100%)`,
-        borderRadius: 18, padding: "20px 20px 16px", marginBottom: "1rem",
+        borderRadius: 18, padding: "18px 18px 14px", marginBottom: "1rem",
         position: "relative", overflow: "hidden",
       }}>
-        {/* decorative circles */}
         <div style={{ position: "absolute", top: -20, right: -20, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.06)" }} />
-        <div style={{ position: "absolute", bottom: -30, right: 30, width: 70, height: 70, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
           <div>
-            <div style={{ fontSize: 28, marginBottom: 4 }}>🌾</div>
-            <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", letterSpacing: "-0.3px" }}>Farming Expenditures</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)", marginTop: 2 }}>{expenses.length} entries recorded</div>
+            <div style={{ fontSize: 22, marginBottom: 2 }}>🌾</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>{currentFarm?.name || "Farm"} Expenses</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 3 }}>
+              {expenses.length} records · {NAIRA(totalSpend)} total
+            </div>
           </div>
-          <button onClick={() => setShowExport(true)} style={{
-            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)",
-            borderRadius: 10, padding: "7px 12px", color: "#fff", fontSize: 12,
-            cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
-            fontFamily: "'Inter', sans-serif", fontWeight: 600,
-          }}>
-            <Icon name="download" size={13} /> Export
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setShowExport(true)} style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 10, padding: "7px 12px", color: "#fff", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 700 }}>
+              📤 Export
+            </button>
+            <button onClick={() => deleteFarm(activeFarm)} style={{ background: "rgba(255,80,80,0.2)", border: "none", borderRadius: 10, padding: "7px 10px", color: "#FCA5A5", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 700 }}>
+              🗑️
+            </button>
+          </div>
         </div>
-        {/* stat row inside banner */}
+        {/* Month stat */}
         <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
           {[
-            { label: "This Month", value: NAIRA(thisMonth.reduce((a, e) => a + e.amount, 0)), sub: `${thisMonth.length} entries` },
-            { label: "This Year",  value: NAIRA(thisYear.reduce((a, e) => a + e.amount, 0)),  sub: `${thisYear.length} entries` },
+            { label: "This Month", value: NAIRA(monthTotal) },
+            { label: "All Time", value: NAIRA(totalSpend) },
+            { label: "Records", value: expenses.length },
           ].map(s => (
-            <div key={s.label} style={{ flex: 1, background: "rgba(255,255,255,0.12)", borderRadius: 12, padding: "10px 12px", backdropFilter: "blur(4px)" }}>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</div>
-              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, fontWeight: 700, color: "#fff", marginTop: 3 }}>{s.value}</div>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginTop: 1 }}>{s.sub}</div>
+            <div key={s.label} style={{ flex: 1, background: "rgba(255,255,255,0.12)", borderRadius: 10, padding: "8px 10px" }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{s.value}</div>
+              <div style={{ fontSize: 9, color: "rgba(255,255,255,0.65)", marginTop: 2 }}>{s.label}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* ── Expense category breakdown ── */}
-      {expenses.length > 0 && (() => {
-        const catTotals = {};
-        expenses.forEach(e => {
-          const c = e.category || "Others";
-          catTotals[c] = (catTotals[c] || 0) + e.amount;
-        });
-        const total = Object.values(catTotals).reduce((a,v) => a+v, 0);
-        const sorted = Object.entries(catTotals).sort((a,b) => b[1]-a[1]);
-        const icons = { Seeds:"🌱", Fertilizer:"🧪", Labor:"👷", Transport:"🚛", Equipment:"⚙️", Others:"📦" };
-        return (
-          <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 14, padding: "12px 14px", marginBottom: "0.75rem", color: "#fff" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.65, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Spend by Category</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              {sorted.slice(0,4).map(([cat, amt]) => (
-                <div key={cat}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.9 }}>{icons[cat]||"📦"} {cat}</span>
-                    <span style={{ fontSize: 11, fontFamily: "'Space Mono', monospace", opacity: 0.85 }}>{NAIRA(amt)} · {Math.round(amt/total*100)}%</span>
-                  </div>
-                  <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", borderRadius: 2, background: "rgba(255,255,255,0.6)", width: `${amt/total*100}%`, transition: "width 0.5s" }} />
-                  </div>
+      {/* ── Category breakdown ── */}
+      {byCategory.length > 0 && (
+        <div className="card" style={{ marginBottom: "0.75rem" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 10 }}>Spend by Category</div>
+          {byCategory.map(([cat, amt]) => {
+            const meta = catMeta[cat] || catMeta.Others;
+            const pct  = totalSpend > 0 ? (amt / totalSpend * 100) : 0;
+            return (
+              <div key={cat} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{meta.icon} {cat}</span>
+                  <span style={{ fontSize: 12, fontFamily: "'Space Mono', monospace", color: meta.color, fontWeight: 700 }}>{NAIRA(amt)}</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
+                <div style={{ height: 6, background: "var(--border)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: meta.color, borderRadius: 3, transition: "width 0.5s" }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {/* ── Category filter chips ── */}
-      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: "0.75rem", scrollbarWidth: "none" }}>
-        {["All", ...FARM_CATS].map(cat => {
-          const meta = catMeta[cat];
-          const active = filterCat === cat;
-          return (
-            <button key={cat} onClick={() => setFilterCat(cat)} style={{
-              flexShrink: 0, padding: "6px 12px", borderRadius: 20,
-              border: `1.5px solid ${active ? FG.main : FG.border}`,
-              background: active ? FG.main : "#fff",
-              color: active ? "#fff" : FG.main,
-              fontSize: 12, fontWeight: 600, cursor: "pointer",
-              fontFamily: "'Inter', sans-serif", display: "flex", alignItems: "center", gap: 5,
-              transition: "all 0.15s",
+      {/* ── Search + filter ── */}
+      <SmartSearch value={search} onChange={setSearch} placeholder="Search expenses…" resultCount={filtered.length} />
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: "0.75rem", paddingBottom: 4, scrollbarWidth: "none" }}>
+        {["All", ...Object.keys(catMeta)].map(c => (
+          <button key={c} onClick={() => setFilterCat(c)}
+            style={{ flexShrink: 0, padding: "5px 12px", borderRadius: 16, border: "none", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 600,
+              background: filterCat === c ? FG.main : "var(--surface)",
+              color: filterCat === c ? "#fff" : "var(--text-muted)",
+              border: filterCat !== c ? `1px solid var(--border)` : "none",
             }}>
-              {meta && <span>{meta.icon}</span>}
-              {cat}
-            </button>
-          );
-        })}
+            {c === "All" ? "All" : `${catMeta[c]?.icon} ${c}`}
+          </button>
+        ))}
       </div>
 
-      {/* ── Search ── */}
-      <div style={{ position: "relative", marginBottom: "0.75rem" }}>
-        <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: FG.mid }}>
-          <Icon name="search" size={16} />
-        </span>
-        <input
-          style={{
-            width: "100%", padding: "10px 12px 10px 38px", borderRadius: 12,
-            border: `1.5px solid ${FG.border}`, background: "#fff",
-            fontSize: 13, fontFamily: "'Inter', sans-serif", outline: "none",
-            color: COLORS.text,
-          }}
-          placeholder="Search expenditures…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
-
-      {/* ── Expenses list ── */}
+      {/* ── Expense list ── */}
       {filtered.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "3rem 1rem" }}>
-          <div style={{ fontSize: 52, marginBottom: 12 }}>🌱</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: FG.dark, marginBottom: 6 }}>No expenditures yet</div>
-          <div style={{ fontSize: 13, color: COLORS.textMuted }}>Tap the + button below to log your first one</div>
+        <div className="empty-state">
+          <div className="empty-icon">🌾</div>
+          <h3>{expenses.length === 0 ? "No expenses yet" : "No results"}</h3>
+          <p>{expenses.length === 0 ? `Tap + to add your first expense for ${currentFarm?.name}` : "Try a different filter"}</p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {filtered.map(exp => {
-            const meta = catMeta[exp.category] || catMeta["Others"];
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          {filtered.map((exp, i) => {
+            const meta = catMeta[exp.category || "Others"] || catMeta.Others;
             return (
-              <div key={exp.id} style={{
-                background: "#fff", borderRadius: 14,
-                border: `1.5px solid ${FG.border}`,
-                overflow: "hidden",
-                boxShadow: "0 1px 4px rgba(45,106,79,0.07)",
-              }}>
-                <div style={{ height: 3, background: `linear-gradient(90deg, ${FG.mid}, ${FG.light})` }} />
-                <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{
-                    width: 40, height: 40, borderRadius: 11, flexShrink: 0,
-                    background: meta.bg, border: `1.5px solid ${FG.border}`,
-                    display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18,
-                  }}>
-                    {meta.icon}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: FG.dark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.desc}</div>
-                    <div style={{ display: "flex", gap: 6, marginTop: 3, alignItems: "center" }}>
-                      <span style={{ fontSize: 11, color: FG.mid }}>📅 {exp.date}</span>
-                      {exp.category && (
-                        <span style={{ fontSize: 10, fontWeight: 700, color: meta.color, background: meta.bg, border: `1px solid ${meta.color}30`, borderRadius: 6, padding: "1px 7px" }}>
-                          {exp.category}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, fontWeight: 700, color: FG.dark }}>{NAIRA(exp.amount)}</div>
-                    <button onClick={() => deleteExpense(exp.id)} style={{
-                      marginTop: 4, background: "none", border: "none", cursor: "pointer",
-                      color: COLORS.danger, opacity: 0.7, padding: "2px 4px",
-                    }}>
-                      <Icon name="trash" size={13} />
-                    </button>
-                  </div>
+              <div key={exp.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < filtered.length - 1 ? `0.5px solid var(--border)` : "none" }}>
+                <div style={{ width: 38, height: 38, borderRadius: 10, background: meta.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{meta.icon}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.desc}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{exp.date} · {exp.category || "Others"}</div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 800, fontFamily: "'Space Mono', monospace", color: COLORS.danger }}>{NAIRA(exp.amount)}</div>
+                  <button onClick={() => deleteExpense(exp.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 11, marginTop: 2, fontFamily: "'Inter', sans-serif" }}>Delete</button>
                 </div>
               </div>
             );
@@ -3124,116 +3188,95 @@ function FarmScreen({ user }) {
       )}
 
       {/* ── FAB ── */}
-      <button
-        onClick={() => { setForm({ date: TODAY(), desc: "", amount: "", category: "" }); setErrors({}); setShowForm(true); }}
-        title="Add expenditure"
-        style={{
-          position: "fixed", bottom: "calc(28px + var(--fab-lift, 0px))", right: 28, zIndex: 200,
-          width: 56, height: 56, borderRadius: "50%",
-          background: `linear-gradient(135deg, ${FG.main}, ${FG.mid})`,
-          color: "#fff", border: "none",
-          boxShadow: `0 4px 18px ${FG.main}88`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.transform="scale(1.1)"; }}
-        onMouseLeave={e => { e.currentTarget.style.transform="scale(1)"; }}
-      >
+      <button onClick={() => setShowForm(true)} style={{
+        position: "fixed", bottom: "calc(28px + var(--fab-lift, 0px))", right: 28, zIndex: 200,
+        width: 56, height: 56, borderRadius: "50%",
+        background: `linear-gradient(135deg, ${FG.dark}, ${FG.mid})`,
+        color: "#fff", border: "none",
+        boxShadow: `0 4px 18px ${FG.main}66`,
+        display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+      }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
       </button>
 
-      {/* ── Add Expenditure centred modal ── */}
-      {showForm && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 300,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          padding: 16, background: "rgba(0,0,0,0.5)",
-        }} onClick={() => setShowForm(false)}>
-          <div style={{
-            background: "#fff", borderRadius: 20,
-            width: "100%", maxWidth: 420,
-            maxHeight: "calc(100vh - 32px)",
-            display: "flex", flexDirection: "column",
-            boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-            animation: "scaleIn 0.22s cubic-bezier(0.4,0,0.2,1)",
-          }} onClick={e => e.stopPropagation()}>
+      {/* ── Add farm manager modal ── */}
+      {showFarmMgr && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowFarmMgr(false)}>
+          <div style={{ background: "var(--surface)", borderRadius: 20, padding: 24, width: "100%", maxWidth: 360, animation: "scaleIn 0.2s ease" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "var(--text)", marginBottom: 16 }}>🌾 Manage Farms</div>
 
-            {/* Sticky header */}
-            <div style={{ padding: "16px 18px 14px", borderBottom: `1px solid ${FG.border}`, flexShrink: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 10, background: FG.pale, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>🌾</div>
-                  <div style={{ fontSize: 17, fontWeight: 700, color: FG.dark }}>Add Expenditure</div>
-                </div>
-                <button onClick={() => setShowForm(false)} style={{ background: COLORS.bg, border: "none", cursor: "pointer", color: COLORS.textMuted, width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>×</button>
+            {/* Existing farms */}
+            {(farms || []).map(f => (
+              <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `0.5px solid var(--border)` }}>
+                <span style={{ fontSize: 14, color: "var(--text)", fontWeight: 600 }}>🌾 {f.name}</span>
+                {(farms || []).length > 1 && (
+                  <button onClick={() => deleteFarm(f.id)} style={{ background: COLORS.dangerLight, border: "none", color: COLORS.danger, borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+                    Delete
+                  </button>
+                )}
+              </div>
+            ))}
+
+            {/* Add new farm */}
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 8 }}>Add a new farm:</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input className="form-input" style={{ flex: 1 }} placeholder="e.g. Ogun State Farm"
+                  value={newFarmName} onChange={e => setNewFarmName(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && addFarm()} autoFocus />
+                <button className="btn btn-primary" onClick={addFarm} style={{ width: "auto", padding: "0 16px" }}>Add</button>
               </div>
             </div>
 
-            {/* Scrollable body */}
-            <div style={{ overflowY: "auto", padding: "16px 18px", flex: 1, WebkitOverflowScrolling: "touch" }}>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Date</label>
-                <input type="date" className="form-input" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))}
-                  style={{ borderColor: FG.border }} />
-              </div>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Description</label>
-                <textarea className={`form-input${errors.desc ? " error" : ""}`} rows={3}
-                  placeholder="What was this expense for?" value={form.desc}
-                  style={{ borderColor: FG.border }}
-                  onChange={e => { setForm(p => ({ ...p, desc: e.target.value })); setErrors(p => ({ ...p, desc: null })); }} />
-                {errors.desc && <div className="form-error">{errors.desc}</div>}
-              </div>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Amount (₦)</label>
-                <div style={{ position: "relative" }}>
-                  <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: FG.mid, fontWeight: 600 }}>₦</span>
-                  <input type="number" className={`form-input${errors.amount ? " error" : ""}`}
-                    style={{ paddingLeft: 28, borderColor: FG.border }}
-                    placeholder="0.00" value={form.amount}
-                    onChange={e => { setForm(p => ({ ...p, amount: e.target.value })); setErrors(p => ({ ...p, amount: null })); }} />
-                </div>
+            <button onClick={() => setShowFarmMgr(false)} style={{ marginTop: 16, width: "100%", background: "none", border: "none", color: "var(--text-muted)", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 8 }}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add expense modal ── */}
+      {showForm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowForm(false)}>
+          <div style={{ background: "var(--surface)", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400, animation: "scaleIn 0.2s ease" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "var(--text)", marginBottom: 16 }}>
+              🌾 Add Expense — {currentFarm?.name}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Date</label>
+              <input type="date" className="form-input" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Description</label>
+              <input className={`form-input${errors.desc ? " error" : ""}`} placeholder="e.g. Bought fertilizer bags"
+                value={form.desc} onChange={e => { setForm(p => ({ ...p, desc: e.target.value })); setErrors(p => ({ ...p, desc: null })); }} />
+              {errors.desc && <div className="form-error">{errors.desc}</div>}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">Amount (₦)</label>
+                <input type="number" className={`form-input${errors.amount ? " error" : ""}`} placeholder="0"
+                  value={form.amount} onChange={e => { setForm(p => ({ ...p, amount: e.target.value })); setErrors(p => ({ ...p, amount: null })); }} />
                 {errors.amount && <div className="form-error">{errors.amount}</div>}
               </div>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Category (optional)</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {FARM_CATS.map(cat => {
-                    const m = catMeta[cat];
-                    const active = form.category === cat;
-                    return (
-                      <button key={cat} onClick={() => setForm(p => ({ ...p, category: p.category === cat ? "" : cat }))} style={{
-                        padding: "7px 12px", borderRadius: 20,
-                        border: `1.5px solid ${active ? FG.main : FG.border}`,
-                        background: active ? FG.main : "#fff",
-                        color: active ? "#fff" : FG.main,
-                        fontSize: 12, fontWeight: 600, cursor: "pointer",
-                        fontFamily: "'Inter', sans-serif",
-                        display: "flex", alignItems: "center", gap: 5, transition: "all 0.15s",
-                      }}>
-                        <span>{m.icon}</span>{cat}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">Category</label>
+                <select className="form-input" value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))}>
+                  {Object.keys(catMeta).map(c => <option key={c} value={c}>{catMeta[c].icon} {c}</option>)}
+                </select>
               </div>
             </div>
 
-            {/* Sticky footer */}
-            <div style={{ padding: "12px 18px 16px", borderTop: `1px solid ${FG.border}`, flexShrink: 0, display: "flex", gap: 10 }}>
-              <button onClick={() => setShowForm(false)} style={{
-                flex: 1, padding: "12px", border: `1.5px solid ${FG.border}`, borderRadius: 12,
-                background: "#fff", color: FG.main, fontWeight: 600, fontSize: 14,
-                cursor: "pointer", fontFamily: "'Inter', sans-serif",
-              }}>Cancel</button>
-              <button onClick={saveExpense} style={{
-                flex: 2, padding: "12px",
-                background: `linear-gradient(135deg, ${FG.main}, ${FG.mid})`,
-                border: "none", borderRadius: 12,
-                color: "#fff", fontWeight: 700, fontSize: 14,
-                cursor: "pointer", fontFamily: "'Inter', sans-serif",
-                boxShadow: `0 3px 12px ${FG.main}55`,
-              }}>Save Expenditure</button>
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setShowForm(false)}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 2, background: `linear-gradient(135deg, ${FG.dark}, ${FG.mid})` }} onClick={saveExpense}>
+                💾 Save Expense
+              </button>
             </div>
           </div>
         </div>
@@ -3242,18 +3285,18 @@ function FarmScreen({ user }) {
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
       {showExport && (
         <ExportModal
-          title="Farming Expenditures"
+          title={`${currentFarm?.name} — Expenditures`}
           onClose={() => setShowExport(false)}
           onExcelExport={() => {
             const headers = ["Date", "Description", "Category", "Amount (₦)"];
             const rows = expenses.map(e => [e.date, e.desc, e.category || "—", e.amount]);
-            exportToExcel("Farm_Expenditures_" + TODAY(), "Expenditures", rows, headers);
-            setShowExport(false); showToast("Excel file downloaded!");
+            exportToExcel(`Farm_${currentFarm?.name}_${TODAY()}`, "Expenditures", rows, headers);
+            setShowExport(false); showToast("Excel downloaded!");
           }}
           onPDFExport={() => {
             const headers = ["Date", "Description", "Category", "Amount (₦)"];
             const rows = expenses.map(e => [e.date, e.desc, e.category || "—", e.amount]);
-            exportToPDF("Farming Expenditures — Export", headers, rows, "Farm_Expenditures");
+            exportToPDF(`${currentFarm?.name} — Farm Expenditures`, headers, rows, `Farm_${currentFarm?.name}`);
             setShowExport(false);
           }}
         />
@@ -3261,6 +3304,7 @@ function FarmScreen({ user }) {
     </div>
   );
 }
+
 
 // ===================== HISTORY / DASHBOARD =====================
 function HistoryScreen({ user }) {
@@ -4803,7 +4847,7 @@ function StaffInviteSection({ user }) {
   const [invites, setInvites]   = useState([]);
   const [loading, setLoading]   = useState(false);
   const [fetching, setFetching] = useState(true);
-  const [msg, setMsg]           = useState({ text: "", ok: true });
+  const [msg, setMsg]           = useState({ text: "", ok: true, isLink: false, copied: false });
   const token = localStorage.getItem("rc_token");
 
   // Load existing invites
@@ -4923,32 +4967,36 @@ function StaffInviteSection({ user }) {
           {msg.text}
         </div>
       )}
-      {msg.isLink && msg.text && (() => {
-        // eslint-disable-next-line react-hooks/rules-of-hooks
-        const [copied, setCopied] = useState(false);
-        return (
-          <div style={{ marginTop: 10, background: COLORS.accentLight, border: `1px solid #6EE7B7`, borderRadius: 12, padding: "12px 14px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.accent, marginBottom: 8 }}>
-              ✅ Invite created! Share this link with your staff:
-            </div>
-            <div style={{ fontSize: 11, color: COLORS.textMuted, wordBreak: "break-all", marginBottom: 10, background: "#fff", borderRadius: 8, padding: "8px 10px", fontFamily: "'Space Mono', monospace" }}>
-              {msg.text}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() => { navigator.clipboard.writeText(msg.text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); }); }}
-                style={{ flex: 1, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
-                {copied ? "✅ Copied!" : "📋 Copy Link"}
-              </button>
-              <button
-                onClick={() => { const msg2 = encodeURIComponent("I'd like you to join my business on Record Chief. Use this link to accept: " + msg.text); window.open("https://wa.me/?text=" + msg2, "_blank"); }}
-                style={{ flex: 1, background: "#25D366", color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
-                📱 Share on WhatsApp
-              </button>
-            </div>
+      {msg.isLink && msg.text && (
+        <div style={{ marginTop: 10, background: COLORS.accentLight, border: `1px solid #6EE7B7`, borderRadius: 12, padding: "12px 14px" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.accent, marginBottom: 8 }}>
+            ✅ Invite created! Share this link with your staff:
           </div>
-        );
-      })()}
+          <div style={{ fontSize: 11, color: COLORS.textMuted, wordBreak: "break-all", marginBottom: 10, background: "var(--surface)", borderRadius: 8, padding: "8px 10px", fontFamily: "'Space Mono', monospace" }}>
+            {msg.text}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(msg.text).then(() => {
+                  setMsg(prev => ({ ...prev, copied: true }));
+                  setTimeout(() => setMsg(prev => ({ ...prev, copied: false })), 2500);
+                });
+              }}
+              style={{ flex: 1, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+              {msg.copied ? "✅ Copied!" : "📋 Copy Link"}
+            </button>
+            <button
+              onClick={() => {
+                const txt = encodeURIComponent("Join my business on Record Chief: " + msg.text);
+                window.open("https://wa.me/?text=" + txt, "_blank");
+              }}
+              style={{ flex: 1, background: "#25D366", color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+              📱 WhatsApp
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: 12, padding: "10px 12px", background: COLORS.primaryLight, borderRadius: 10, fontSize: 12, color: COLORS.primary, lineHeight: 1.6 }}>
         💡 Invited staff will receive an email, sign up with their own account, and immediately see your business records. You can remove their access anytime.
