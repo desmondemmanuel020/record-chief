@@ -1433,8 +1433,21 @@ function LoginScreen({ onAuth, onNavigate }) {
       <div style={{ background: "#fff", borderRadius: 24, padding: "28px 24px 36px", width: "100%", maxWidth: 400, marginBottom: 32, boxShadow: "0 8px 40px rgba(15,23,42,0.18)" }}>
         <button onClick={() => onNavigate("welcome")} style={{ background: "none", border: "none", color: COLORS.textMuted, marginBottom: 16, display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}><Icon name="back" size={16} /> Back</button>
         {error && (
-          <div style={{ background: COLORS.dangerLight, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16, display: "flex", gap: 8, alignItems: "center" }}>
-            <span>⚠️</span>{error}
+          <div style={{
+            background: error.includes("waking up") || error.includes("too long") ? "#FEF3C7" : COLORS.dangerLight,
+            color: error.includes("waking up") || error.includes("too long") ? "#92400E" : COLORS.danger,
+            borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16,
+          }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <span>{error.includes("waking up") || error.includes("too long") ? "⏳" : "⚠️"}</span>
+              <span style={{ lineHeight: 1.5 }}>{error}</span>
+            </div>
+            {(error.includes("waking up") || error.includes("too long")) && (
+              <button onClick={submit} disabled={loading}
+                style={{ marginTop: 10, background: "#2563EB", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif", width: "100%" }}>
+                🔄 Try Again
+              </button>
+            )}
           </div>
         )}
         <div className="form-group">
