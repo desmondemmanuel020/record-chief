@@ -873,7 +873,7 @@ const findAccount = (email) => { try { const a = JSON.parse(localStorage.getItem
 // ═══════════════════════════════════════════════════════════════
 
 // ── Backend API URL ──────────────────────────────────────────────
-const API_URL = "recordchief-backend-production-019b.up.railway.app";
+const API_URL = "https://recordchief-backend-production-019b.up.railway.app";
 
 // ── Auth API — calls the real backend ────────────────────────────
 const AuthAPI = {
