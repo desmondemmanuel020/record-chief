@@ -364,10 +364,33 @@ function useLocalState(key, init) {
   const [val, setVal] = useState(() => {
     try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : (typeof init === "function" ? init() : init); } catch { return typeof init === "function" ? init() : init; }
   });
+
+  // Re-hydrate from localStorage whenever sync pulls new data
+  useEffect(() => {
+    const handler = () => {
+      try {
+        const s = localStorage.getItem(key);
+        if (s !== null) setVal(JSON.parse(s));
+      } catch {}
+    };
+    window.addEventListener("rc_sync_update", handler);
+    return () => window.removeEventListener("rc_sync_update", handler);
+  }, [key]);
+
   const update = useCallback((v) => {
     setVal(prev => {
       const next = typeof v === "function" ? v(prev) : v;
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+        IDB.set(key, next).catch(() => {});
+        // Trigger immediate push 500ms after any data write
+        clearTimeout(window._syncPushTimer);
+        window._syncPushTimer = setTimeout(() => {
+          const token = localStorage.getItem("rc_token");
+          const uid = (() => { try { return JSON.parse(localStorage.getItem("rc_session"))?.uid; } catch { return null; } })();
+          if (token && uid && navigator.onLine) AuthAPI.syncToServer(uid).catch(() => {});
+        }, 500);
+      } catch {}
       return next;
     });
   }, [key]);
@@ -897,6 +920,14 @@ const AuthAPI = {
   },
 
   // Simple hash for offline password verification (not cryptographic — just a fingerprint)
+  // Immediate push then pull — call after any data write when online
+  async syncNow(uid) {
+    if (!navigator.onLine) return;
+    await this.syncToServer(uid).catch(() => {});
+    await new Promise(r => setTimeout(r, 800));
+    await this.syncFromServer(uid).catch(() => {});
+  },
+
   _hashPw(pw) {
     let h = 0;
     for (let i = 0; i < pw.length; i++) { h = (Math.imul(31, h) + pw.charCodeAt(i)) | 0; }
@@ -1083,29 +1114,27 @@ const AuthAPI = {
             localVal = raw ? JSON.parse(raw) : null;
           }
 
-          // Only skip if server sends empty AND local has data
-          // (protects against accidental wipe — e.g. Railway cold start)
+          // Server ALWAYS wins — it's the single source of truth
+          // Exception: if server returns empty array but we have local data,
+          // keep local (protects against Railway cold-start empty response)
           if (Array.isArray(serverVal) && Array.isArray(localVal)) {
             if (serverVal.length === 0 && localVal.length > 0) {
-              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:0, reason:"Server empty, kept local" });
+              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:0, reason:"Server returned empty — kept local" });
               return;
+            }
+            if (serverVal.length !== localVal.length) {
+              SyncLog.add({
+                type:"applied_server", label,
+                localCount: localVal.length,
+                serverCount: serverVal.length,
+                reason: serverVal.length > localVal.length ? "Server has more records" : "Server has fewer records (deletion synced)"
+              });
             }
           }
 
-          // Compare by content — if different, server wins
-          // (most recent push wins — whoever pushed last has the truth)
           const serverStr = JSON.stringify(serverVal);
           const localStr  = JSON.stringify(localVal);
           if (localStr !== serverStr) {
-            if (Array.isArray(serverVal) && Array.isArray(localVal) && serverVal.length !== localVal.length) {
-              SyncLog.add({
-                type: serverVal.length > localVal.length ? "applied_server" : "applied_server",
-                label,
-                localCount: localVal.length,
-                serverCount: serverVal.length,
-                reason: "Server data applied"
-              });
-            }
             await persist(key, serverVal);
             changed = true;
           }
@@ -1665,10 +1694,35 @@ function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview
 
 // ===================== SALES REP MODE =====================
 function SalesRepScreen({ user }) {
-  const storageKey = `sl_sales_${user.uid}`;
-  const fieldsKey = `sl_sales_fields_${user.uid}`;
+  const storageKey   = `sl_sales_${user.uid}`;
+  const fieldsKey    = `sl_sales_fields_${user.uid}`;
+  const fieldSetsKey = `sl_sales_fieldsets_${user.uid}`;
+
+  // Field sets: array of { id, name, fields[] }
+  // Each set groups entries that share the same custom fields
+  const [fieldSets, setFieldSets] = useLocalState(fieldSetsKey, null);
+  const [activeSetId, setActiveSetId] = useState(null);
+
+  // All entries — keyed by their fieldSetId
   const [entries, setEntries] = useLocalState(storageKey, []);
   const [fields, setFields] = useLocalState(fieldsKey, null);
+
+  // Derived: active field set
+  const allFieldSets = fieldSets || (fields ? [{ id: "default", name: "Records", fields }] : null);
+  const currentSet   = allFieldSets?.find(s => s.id === activeSetId) || allFieldSets?.[0] || null;
+  const currentSetFields = currentSet?.fields || fields;
+
+  // Entries belonging to active set
+  const setEntries2 = useCallback((updater) => {
+    setEntries(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      return next;
+    });
+  }, [setEntries]);
+
+  const activeEntries = activeSetId
+    ? entries.filter(e => e._setId === activeSetId || (!e._setId && activeSetId === (allFieldSets?.[0]?.id)))
+    : entries;
   const [tab, setTab] = useState("entry");
   const [search, setSearch] = useState("");
   const [toast, setToast] = useState(null);
@@ -1687,11 +1741,22 @@ function SalesRepScreen({ user }) {
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); };
 
+  // Save a new field set without touching existing entries or their sets
+  const saveAsNewSet = (setName, newCustomFields) => {
+    const combined = [...defaultFields, ...newCustomFields.filter(f => f.name.trim())];
+    const newSet = { id: uid(), name: setName || `Set ${(allFieldSets?.length || 0) + 1}`, fields: combined };
+    const updatedSets = [...(allFieldSets || []), newSet];
+    setFieldSets(updatedSets);
+    setActiveSetId(newSet.id);
+    // Don't touch setFields — keeps existing entries displaying correctly
+    showToast(`"${newSet.name}" created! Switch between sets using tabs above.`);
+  };
+
   const defaultFields = [
     { id: "f_date", name: "Date", type: "Date" },
     { id: "f_notes", name: "Notes", type: "Text" },
   ];
-  const activeFields = fields || defaultFields;
+  const activeFields = currentSetFields || fields || defaultFields;
 
   useEffect(() => {
     // Show manage fields on first open if no fields defined
@@ -1704,7 +1769,8 @@ function SalesRepScreen({ user }) {
       if (!form[f.id] && f.id !== "f_notes") e[f.id] = `${f.name} is required`;
     });
     if (Object.keys(e).length) { setErrors(e); return; }
-    const entry = { id: editId || uid(), ...form, createdAt: TS() };
+    const setId = currentSet?.id || "default";
+    const entry = { id: editId || uid(), ...form, _setId: setId, createdAt: TS() };
     if (editId) {
       setEntries(prev => prev.map(x => x.id === editId ? entry : x));
       setEditId(null);
@@ -1724,9 +1790,21 @@ function SalesRepScreen({ user }) {
     setEditId(entry.id);
   };
 
-  const finishSetup = () => {
+  const finishSetup = (setName) => {
     const combined = [...defaultFields, ...draftFields.filter(f => f.name.trim())];
-    setFields(combined);
+    // If no field sets exist yet, init the first one
+    if (!allFieldSets || allFieldSets.length === 0) {
+      const firstSet = { id: "default", name: setName || "Records", fields: combined };
+      setFieldSets([firstSet]);
+      setActiveSetId("default");
+      setFields(combined); // only set global for the very first setup
+    } else {
+      // Update existing active set's fields without touching other sets
+      const updatedSets = (allFieldSets || []).map(s =>
+        s.id === (currentSet?.id || "default") ? { ...s, fields: combined } : s
+      );
+      setFieldSets(updatedSets);
+    }
     setDraftFields([]);
     setSetupMode(false);
     showToast("Columns saved!");
@@ -1887,6 +1965,52 @@ function SalesRepScreen({ user }) {
           <option value="newest">🕐 Recently added</option>
         </select>
       </div>
+
+      {/* ── Historical groups ── */}
+      {groups.length > 0 && groups.map((grp) => {
+        const grpFiltered = (grp.entries || []).filter(e =>
+          !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase())
+        );
+        if (grpFiltered.length === 0) return null;
+        const grpFields = grp.fields || [];
+        const firstF    = grpFields[0];
+        return (
+          <div key={grp.id} style={{ marginBottom:"1rem" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                📁 {grp.name} · {grp.entries.length} record{grp.entries.length!==1?"s":""}
+              </div>
+              <button onClick={() => {
+                if(!window.confirm("Delete this entire group and all its records?")) return;
+                const upd = groups.filter(g => g.id !== grp.id);
+                setGroups(upd); localStorage.setItem(groupsKey, JSON.stringify(upd));
+              }} style={{ background:"none", border:"none", color:COLORS.danger, fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+                Delete group
+              </button>
+            </div>
+            <div className="card" style={{ padding:0, overflow:"hidden" }}>
+              {grpFiltered.slice(0,5).map((e,i) => (
+                <div key={e.id||i} style={{ padding:"10px 14px", borderBottom: i<Math.min(grpFiltered.length,5)-1?`0.5px solid var(--border)`:"none", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{firstF?(e[firstF.id]||"—"):"—"}</div>
+                    <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
+                      {grpFields.slice(1,3).map(f=>e[f.id]).filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)" }}>{e.f_date||e.date||""}</div>
+                </div>
+              ))}
+              {grpFiltered.length>5 && <div style={{ padding:"8px 14px", fontSize:12, color:"var(--primary)", fontWeight:600 }}>+{grpFiltered.length-5} more</div>}
+            </div>
+          </div>
+        );
+      })}
+
+      {entries.length > 0 && groups.length > 0 && (
+        <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
+          📋 Current Records
+        </div>
+      )}
 
       {filtered.length === 0 ? (
         <div className="empty-state"><div class="empty-icon">👥</div><h3>No customer records yet</h3><p>Tap the + button to add your first record</p></div>
@@ -4897,22 +5021,75 @@ function StaffInviteSection({ user }) {
   };
 
   const revokeInvite = async (inviteId) => {
-    if (!window.confirm("Remove this person's access?")) return;
+    if (!window.confirm("Remove this person's access? They will no longer be able to view your records.")) return;
     try {
-      await fetch(`${API_URL}/api/invite/${inviteId}`, {
+      const res = await fetch(`${API_URL}/api/invite/${inviteId}`, {
         method: "DELETE", headers: { Authorization: `Bearer ${token}` },
       });
-      setInvites(prev => prev.filter(i => i._id !== inviteId));
+      if (res.ok) {
+        // Remove from list immediately
+        setInvites(prev => prev.filter(i => i._id !== inviteId));
+      }
     } catch(e) {}
   };
 
+  const [pendingToken] = useState(() => localStorage.getItem("rc_pending_invite"));
+  const [acceptMsg, setAcceptMsg] = useState("");
+  const [accepting, setAccepting] = useState(false);
+
+  const acceptPendingInvite = async () => {
+    if (!pendingToken) return;
+    setAccepting(true); setAcceptMsg("");
+    try {
+      const res = await fetch(`${API_URL}/api/invite/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ token: pendingToken }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        localStorage.removeItem("rc_pending_invite");
+        setAcceptMsg("✅ " + data.message);
+        setTimeout(() => window.location.reload(), 2000);
+      } else {
+        setAcceptMsg("❌ " + (data.error || "Failed to accept invite"));
+      }
+    } catch(e) {
+      setAcceptMsg("❌ Network error. Try again.");
+    }
+    setAccepting(false);
+  };
+
+  // If user has a pending invite token, show accept card
+  if (pendingToken && user.role !== "staff") {
+    return (
+      <div className="card" style={{ marginBottom: "0.75rem", background: COLORS.primaryLight, border: `1.5px solid ${COLORS.primary}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.primary, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>📩</div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary }}>You have a pending invite!</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>Accept to join your employer's business records</div>
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={acceptPendingInvite} disabled={accepting}>
+          {accepting ? "Accepting…" : "✅ Accept Invite & Join Business"}
+        </button>
+        {acceptMsg && <div style={{ fontSize: 12, marginTop: 8, color: acceptMsg.startsWith("✅") ? COLORS.accent : COLORS.danger }}>{acceptMsg}</div>}
+        <button onClick={() => { localStorage.removeItem("rc_pending_invite"); window.location.reload(); }}
+          style={{ marginTop: 8, background: "none", border: "none", color: COLORS.textMuted, fontSize: 11, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+          Dismiss invite
+        </button>
+      </div>
+    );
+  }
+
   if (user.role === "staff") {
     return (
-      <div className="card" style={{ marginBottom: "0.75rem" }}>
+      <div className="card" style={{ marginBottom: "0.75rem", background: COLORS.accentLight, border: `1.5px solid ${COLORS.accent}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>Staff Account</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.accent }}>Staff Account</div>
             <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>
               You are viewing and editing your employer's business records.
             </div>
@@ -4937,7 +5114,7 @@ function StaffInviteSection({ user }) {
         <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 12 }}>Loading...</div>
       ) : invites.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          {invites.map(inv => (
+          {invites.filter(inv => inv.status !== "revoked").map(inv => (
             <div key={inv._id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `0.5px solid ${COLORS.border}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ width: 32, height: 32, borderRadius: "50%", background: inv.status === "accepted" ? COLORS.accentLight : COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: inv.status === "accepted" ? COLORS.accent : COLORS.primary }}>
@@ -4957,6 +5134,37 @@ function StaffInviteSection({ user }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Accept pending invite */}
+      {localStorage.getItem("rc_pending_invite") && (
+        <div style={{ background: COLORS.amberLight, border: `1px solid #FCD34D`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.amber, marginBottom: 4 }}>📩 Pending Staff Invite</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>You have a pending invite to join a business.</div>
+          <button className="btn btn-primary" style={{ marginBottom: 8 }} onClick={async () => {
+            const pending = localStorage.getItem("rc_pending_invite");
+            const jwt = localStorage.getItem("rc_token");
+            try {
+              const res = await fetch(`${API_URL}/api/invite/accept`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+                body: JSON.stringify({ token: pending }),
+              });
+              const data = await res.json();
+              if (res.ok) {
+                localStorage.removeItem("rc_pending_invite");
+                setMsg({ text: "✅ Access granted! Reloading…", ok: true, isLink: false });
+                setTimeout(() => window.location.reload(), 2000);
+              } else {
+                setMsg({ text: data.error || "Failed to accept invite.", ok: false, isLink: false });
+              }
+            } catch(e) { setMsg({ text: "Network error. Try again.", ok: false, isLink: false }); }
+          }}>✅ Accept Invite</button>
+          <button onClick={() => { localStorage.removeItem("rc_pending_invite"); window.location.reload(); }}
+            style={{ background:"none", border:"none", color:COLORS.danger, fontSize:12, cursor:"pointer", fontFamily:"'Inter',sans-serif", display:"block" }}>
+            Decline
+          </button>
         </div>
       )}
 
@@ -5997,6 +6205,18 @@ function App() {
     };
     window.addEventListener("online", handleOnline);
 
+    // Push immediately on every data write (real-time cross-device sync)
+    let writeTimer = null;
+    const handleDataWrite = () => {
+      if (!navigator.onLine) return;
+      clearTimeout(writeTimer);
+      writeTimer = setTimeout(() => {
+        doSync();
+        setTimeout(doPull, 2000);
+      }, 1500);
+    };
+    window.addEventListener("rc_data_write", handleDataWrite);
+
     // Pause when tab hidden, resume when visible
     const handleVisibility = () => {
       if (!document.hidden) {
@@ -6009,8 +6229,10 @@ function App() {
     return () => {
       clearTimeout(pushTimer);
       clearTimeout(pullTimer);
+      clearTimeout(writeTimer);
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("rc_sync_update", handleSyncUpdate);
+      window.removeEventListener("rc_data_write", handleDataWrite);
       document.removeEventListener("visibilitychange", handleVisibility);
       ["click","keydown","touchstart","scroll"].forEach(ev =>
         window.removeEventListener(ev, markActive)
@@ -6197,6 +6419,9 @@ function App() {
 
   const [showPinSetup, setShowPinSetup] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [pinP1, setPinP1] = useState("");
+  const [pinP2, setPinP2] = useState("");
+  const [pinErr, setPinErr] = useState("");
 
   const handleAuth = (u, sectors, isNewSignup = false) => {
     const fullUser = { ...u, sectors: sectors || u.sectors || ["shop"] };
@@ -6208,7 +6433,7 @@ function App() {
     if (!showOnboarding) { setShowOnboarding(false); }
     // Prompt PIN setup for new signups (if no PIN already set)
     if (isNewSignup && !localStorage.getItem("sl_pin")) {
-      setTimeout(() => setShowPinSetup(true), 1200);
+      setTimeout(() => setShowPinSetup(true), 800);
     }
     // Weekly backup nudge
     const _lbk = `rc_last_backup_${fullUser.uid}`;
@@ -6306,26 +6531,46 @@ function App() {
   if (screen === "signup") return (<><style>{css}</style><SignupScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
   if (screen === "login") return (<><style>{css}</style><LoginScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
 
-  // PIN setup prompt for new signups
   if (showPinSetup) return (
     <><style>{css}</style>
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div style={{ background: COLORS.surface, borderRadius: 24, padding: 28, width: "100%", maxWidth: 360, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>🔒</div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: COLORS.text, marginBottom: 8 }}>Set a PIN lock?</div>
-        <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 24, lineHeight: 1.6 }}>
-          Protect your business records with a 4-digit PIN. You can always set or change this later in Profile.
+    <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,#1E3A8A,#2563EB)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+      <div style={{ background:"#fff", borderRadius:24, padding:28, width:"100%", maxWidth:360, textAlign:"center", boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ fontSize:44, marginBottom:10 }}>🔒</div>
+        <div style={{ fontSize:20, fontWeight:800, color:COLORS.text, marginBottom:4 }}>Create your PIN</div>
+        <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:20, lineHeight:1.6 }}>
+          Set a 4-digit PIN to protect your business records. You can change it anytime from Profile.
         </div>
-        <button className="btn btn-primary" style={{ marginBottom: 10 }} onClick={() => { setShowPinSetup(false); setNavTab("profile"); }}>
-          🔐 Set PIN Now
+        <div className="form-group" style={{ textAlign:"left" }}>
+          <label className="form-label">Enter 4-digit PIN</label>
+          <input type="password" inputMode="numeric" maxLength={4} className="form-input"
+            value={pinP1} onChange={e => { setPinP1(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
+            placeholder="••••"
+            style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }} autoFocus />
+        </div>
+        <div className="form-group" style={{ textAlign:"left" }}>
+          <label className="form-label">Confirm PIN</label>
+          <input type="password" inputMode="numeric" maxLength={4} className="form-input"
+            value={pinP2} onChange={e => { setPinP2(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
+            placeholder="••••"
+            style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }} />
+        </div>
+        {pinErr && <div style={{ color:COLORS.danger, fontSize:13, marginBottom:10 }}>{pinErr}</div>}
+        <button className="btn btn-primary" style={{ marginBottom:10 }} onClick={() => {
+          if (pinP1.length !== 4) { setPinErr("PIN must be exactly 4 digits"); return; }
+          if (pinP1 !== pinP2) { setPinErr("PINs do not match. Try again."); return; }
+          localStorage.setItem("sl_pin", pinP1);
+          setShowPinSetup(false);
+          setPinP1(""); setPinP2(""); setPinErr("");
+        }}>
+          ✅ Save PIN &amp; Continue
         </button>
-        <button onClick={() => setShowPinSetup(false)} style={{ width: "100%", background: "none", border: "none", color: COLORS.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 8 }}>
+        <button onClick={() => { setShowPinSetup(false); setPinP1(""); setPinP2(""); }}
+          style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:8 }}>
           Skip for now
         </button>
       </div>
     </div>
-    </>
-  );
+    </>;
 
   // PIN lock screen
   if (pin && !pinUnlocked) return (
