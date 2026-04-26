@@ -1056,13 +1056,14 @@ const AuthAPI = {
       ]);
 
       // Low-bandwidth: only send if there's actual data
+      const isStaff = (() => { try { return JSON.parse(localStorage.getItem("rc_session")||"{}").role==="staff"; } catch{return false;} })();
       const payload = {
         inventory:    inv    || [],
         shopSales:    sales  || [],
-        farmExpenses: farm   || [],
-        salesEntries: entries|| [],
-        salesFields:  fields || null,
-        debtRecords:  debt   || [],
+        farmExpenses: isStaff ? undefined : (farm    || []),
+        salesEntries: isStaff ? undefined : (entries || []),
+        salesFields:  isStaff ? undefined : (fields  || null),
+        debtRecords:  isStaff ? undefined : (debt    || []),
         settings: {
           sector:   localStorage.getItem("sl_sector"),
           darkMode: localStorage.getItem("sl_darkmode"),
@@ -1505,7 +1506,7 @@ function LoginScreen({ onAuth, onNavigate }) {
 
 // ===================== HOME (SECTOR PICKER) =====================
 function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview, onViewDebt }) {
-  const userSectors = (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
+  const userSectors = user.role === "staff" ? ["shop"] : (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
   const activeSectors = ALL_SECTORS.filter(s => userSectors.includes(s.id));
   const avatarKey  = `sl_avatar_${user.uid}`;
   const storedAvatar = (() => { try { return JSON.parse(localStorage.getItem(avatarKey)); } catch { return null; } })();
@@ -1648,8 +1649,7 @@ function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview
           </div>
         )}
 
-        {/* Debt & Credit full-width card */}
-        <button onClick={onViewDebt} style={{
+        {user.role !== "staff" && <button onClick={onViewDebt} style={{
           gridColumn:"1 / -1",
           borderRadius:18, padding:"16px 18px",
           background:sectorGradients.debt,
@@ -1675,8 +1675,7 @@ function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview
               View →
             </div>
           )}
-        </button>
-      </div>
+        </button>}
 
       {/* ── Motivational footer ── */}
       <div style={{ textAlign:"center", marginTop:"1rem", padding:"14px 16px", background:"var(--surface)", borderRadius:16, border:"1px solid var(--border)" }}>
@@ -5091,7 +5090,7 @@ function StaffInviteSection({ user }) {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.accent }}>Staff Account</div>
             <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>
-              You are viewing and editing your employer's business records.
+              You have access to the Shop Sales section only. Farm, Customer Records and Debt are your own independent sections.
             </div>
           </div>
         </div>
@@ -6427,7 +6426,11 @@ function App() {
     const fullUser = { ...u, sectors: sectors || u.sectors || ["shop"] };
     setUser(fullUser);
     localStorage.setItem("rc_session", JSON.stringify(fullUser));
-    if (sectors && sectors.length > 0) setSector(sectors[0]);
+    if (fullUser.role === "staff") {
+      setSector("shop");
+    } else if (sectors && sectors.length > 0) {
+      setSector(sectors[0]);
+    }
     setScreen("app");
     setNavTab("home");
     if (!showOnboarding) { setShowOnboarding(false); }
@@ -6614,7 +6617,7 @@ function App() {
   const sectorMeta = ALL_SECTORS.find(s => s.id === sector) || ALL_SECTORS[0];
   const sectorLabel = `${sectorMeta.icon} ${sectorMeta.id === "sales" ? "Sales" : sectorMeta.id === "shop" ? "Shop" : "Farm"}`;
 
-  const userSectors = (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
+  const userSectors = user.role === "staff" ? ["shop"] : (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
   const activeSectors = ALL_SECTORS.filter(s => userSectors.includes(s.id));
   const initials = user?.name?.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
 
@@ -6966,7 +6969,11 @@ function App() {
           const overdueN = debtRecs.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
           const firstSector = activeSectors[0];
           const activeSectorAccent = sector === "farm" ? "#40916C" : sector === "sales" ? "#A78BFA" : "#60A5FA";
-          const tabs = [
+          const tabs = user.role === "staff" ? [
+            { id: "home",    icon: "🏠", label: "Home",    accent: "#60A5FA" },
+            { id: "sector",  icon: "🏪", label: "Shop",    accent: "#60A5FA" },
+            { id: "profile", icon: "👤", label: "Profile", accent: "#60A5FA" },
+          ] : [
             { id: "home",       icon: "🏠", label: "Home",     accent: "#60A5FA" },
             { id: "sector",     icon: activeSectors.find(s => s.id === sector)?.icon || "🏪", label: "Sector", accent: activeSectorAccent },
             { id: "debtcredit", icon: "🤝", label: "Debts",    accent: "#86C99A", badge: overdueN },
