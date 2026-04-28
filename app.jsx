@@ -947,7 +947,7 @@ const AuthAPI = {
       if (typeof AbortController !== "undefined") {
         const controller = new AbortController();
         signal = controller.signal;
-        timeout = setTimeout(() => controller.abort(), 6000);
+        timeout = setTimeout(() => controller.abort(), 20000); // 20s for Railway cold start
       }
       const res = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
@@ -1899,9 +1899,8 @@ function SalesRepScreen({ user }) {
                 📁 {grp.name} · {grp.entries?.length||0} record{(grp.entries?.length||0)!==1?"s":""}
               </div>
               <button onClick={() => {
-                if(!window.confirm(`Delete "${grp.name}" and all its records? This cannot be undone.`)) return;
                 setGroups(prev => (prev||[]).filter(g => g.id !== grp.id));
-                showToast("Group deleted","error");
+                showToast(`"${grp.name}" deleted`,"error");
               }} style={{ background:"none", border:"none", color:COLORS.danger, fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
                 Delete group
               </button>
@@ -2873,6 +2872,21 @@ function ShopScreen({ user }) {
         </div>
       )}
 
+      {confirmDeleteFarm && (
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setConfirmDeleteFarm(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:340 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:18, fontWeight:800, color:"var(--text)", marginBottom:8 }}>🗑️ Delete Farm?</div>
+            <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              This will permanently delete the farm and all its expense records. This cannot be undone.
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setConfirmDeleteFarm(null)}>Cancel</button>
+              <button className="btn btn-danger" style={{ flex:1, fontWeight:800 }} onClick={() => doDeleteFarm(confirmDeleteFarm)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
       {showExport && (
         <ExportModal
@@ -2983,13 +2997,17 @@ function FarmScreen({ user }) {
     showToast(`"${name}" farm created!`);
   };
 
+  const [confirmDeleteFarm, setConfirmDeleteFarm] = useState(null);
   const deleteFarm = (fid) => {
     if ((farms || []).length <= 1) { showToast("Cannot delete your only farm", "error"); return; }
-    if (!window.confirm("Delete this farm and all its expenses?")) return;
+    setConfirmDeleteFarm(fid); // show confirm modal
+  };
+  const doDeleteFarm = (fid) => {
     localStorage.removeItem(expKey(fid));
     const updated = (farms || []).filter(f => f.id !== fid);
     setFarms(updated);
     setActiveFarm(updated[0]?.id || null);
+    setConfirmDeleteFarm(null);
     showToast("Farm deleted", "error");
   };
 
@@ -3252,6 +3270,21 @@ function FarmScreen({ user }) {
         </div>
       )}
 
+      {confirmDeleteFarm && (
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setConfirmDeleteFarm(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:340 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:18, fontWeight:800, color:"var(--text)", marginBottom:8 }}>🗑️ Delete Farm?</div>
+            <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              This will permanently delete the farm and all its expense records. This cannot be undone.
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setConfirmDeleteFarm(null)}>Cancel</button>
+              <button className="btn btn-danger" style={{ flex:1, fontWeight:800 }} onClick={() => doDeleteFarm(confirmDeleteFarm)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
       {showExport && (
         <ExportModal
@@ -4857,7 +4890,7 @@ function StaffInviteSection({ user }) {
   };
 
   const revokeInvite = async (inviteId) => {
-    if (!window.confirm("Remove this person's access? They will no longer be able to view your records.")) return;
+    // Confirmed inline — no window.confirm needed
     try {
       const res = await fetch(`${API_URL}/api/invite/${inviteId}`, {
         method: "DELETE", headers: { Authorization: `Bearer ${token}` },
@@ -6248,7 +6281,7 @@ function App() {
     const _lbk = `rc_last_backup_${fullUser.uid}`;
     const _lb  = localStorage.getItem(_lbk);
     const _days = _lb ? Math.floor((Date.now() - new Date(_lb)) / 86400000) : 999;
-    if (_days >= 7) setTimeout(() => setNavTab("synclog"), 4000);
+    if (_days >= 7 && !isNewSignup) setTimeout(() => setNavTab("synclog"), 5000);
 
     // Pull latest data from server   also refresh profile to get latest sectors
     const token = localStorage.getItem("rc_token");
@@ -6339,6 +6372,19 @@ function App() {
   );
   if (screen === "signup") return (<><style>{css}</style><SignupScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
   if (screen === "login") return (<><style>{css}</style><LoginScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
+
+  if (!showOnboarding && user) return (
+    <>
+      <style>{css}</style>
+      <OnboardingScreen user={user} onDone={() => {
+        setShowOnboarding(true);
+        // Show PIN setup after onboarding completes (new signup only)
+        if (!localStorage.getItem("sl_pin")) {
+          setTimeout(() => setShowPinSetup(true), 400);
+        }
+      }} />
+    </>
+  );
 
   if (showPinSetup) return (
     <><style>{css}</style>
@@ -6469,19 +6515,6 @@ function App() {
     : sectorLabel;
 
   // Onboarding   show once after first login
-  if (!showOnboarding && user) return (
-    <>
-      <style>{css}</style>
-      <OnboardingScreen user={user} onDone={() => {
-        setShowOnboarding(true);
-        // Show PIN setup after onboarding completes (new signup only)
-        if (!localStorage.getItem("sl_pin")) {
-          setTimeout(() => setShowPinSetup(true), 400);
-        }
-      }} />
-    </>
-  );
-
   // Sidebar active accent   matches each section's theme colour
   const sidebarAccent = (() => {
     if (navTab === "sector") {
@@ -6534,12 +6567,14 @@ function App() {
           <button className="nav-tab" onClick={() => { setNavTab("home"); setSidebarOpen(false); }} title="Home" style={navTab === "home" ? activeNavStyle : {}}>
             <Icon name="home" size={16} /><span className="nav-label">Home</span>
           </button>
+          {user?.role !== "staff" && <>
           <button className="nav-tab" onClick={() => { setNavTab("history"); setSidebarOpen(false); }} title="Overview" style={navTab === "history" ? activeNavStyle : {}}>
             <Icon name="chart" size={16} /><span className="nav-label">Overview</span>
           </button>
           <button className="nav-tab" onClick={() => { setNavTab("synclog"); setSidebarOpen(false); }} title="Sync & Backup" style={navTab === "synclog" ? activeNavStyle : {}}>
             <Icon name="history" size={16} /><span className="nav-label">Sync</span>
           </button>
+          </>}
 
           {activeSectors.length > 0 && <div className="sidebar-section">Sectors</div>}
           {activeSectors.map(s => {
@@ -6564,6 +6599,7 @@ function App() {
             const debtKey = `sl_debt_${user?.uid}`;
             const debtRecs = (() => { try { return JSON.parse(localStorage.getItem(debtKey)) || []; } catch { return []; } })();
             const overdueN = debtRecs.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
+            if (user?.role === "staff") return null;
             return (
               <button className="nav-tab"
                 title="Debt & Credit"
