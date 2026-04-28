@@ -17,7 +17,7 @@ const TODAY = () => new Date().toISOString().split("T")[0];
 const TS = () => new Date().toISOString();
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// Dynamic colors — these are the CSS var equivalents for JSX inline styles
+// Dynamic colors   these are the CSS var equivalents for JSX inline styles
 // Used alongside static COLORS for gradient/special colours
 const DC = {
   bg: "var(--bg)",
@@ -695,10 +695,10 @@ function MiniBarChart({ data, color, label }) {
 // ===================== AUTH =====================
 
 
-// ═══════════════════════════════════════════════════════
-// IndexedDB wrapper — faster, larger capacity than localStorage
+//                                                        
+// IndexedDB wrapper   faster, larger capacity than localStorage
 // Falls back to localStorage silently if IDB not available
-// ═══════════════════════════════════════════════════════
+//                                                        
 const IDB = (() => {
   const DB_NAME = "RecordChief";
   const DB_VER  = 1;
@@ -762,7 +762,7 @@ const IDB = (() => {
   };
 })();
 
-// ── Sync conflict log ─────────────────────────────────
+//    Sync conflict log                                  
 // Tracks when local data was kept over server data
 const SyncLog = {
   KEY: "rc_sync_log",
@@ -780,7 +780,7 @@ const SyncLog = {
   clear() { localStorage.removeItem(this.KEY); },
 };
 
-// ── Demo Mode sample data ─────────────────────────────
+//    Demo Mode sample data                              
 const DEMO_USER = {
   uid: "demo_user", name: "Amaka (Demo)", email: "demo@recordchief.app",
   phone: "08012345678", location: "Lagos Island", sectors: ["shop","farm","sales"],
@@ -884,23 +884,23 @@ const ALL_SECTORS = [
   { id: "farm",   icon: "🌾", color: "#FEF3E2", borderColor: "#F0C87A", label: "Farmers Expense Tracker",     desc: "Seeds, fertilizer, labor, and all farm costs" },
 ];
 
-// ── Auth helpers ──
+//    Auth helpers   
 const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
 const isAlphaName  = (v) => /^[a-zA-Z\s'\-]+$/.test(v.trim());
 
 const findAccount = (email) => { try { const a = JSON.parse(localStorage.getItem("sl_accounts_v1")) || {}; return a[email.toLowerCase()] || null; } catch { return null; } };
-// ═══════════════════════════════════════════════════════════════
-// AUTH LAYER — Firebase-ready
-// ─────────────────────────────────────────────────────────────
+//                                                                
+// AUTH LAYER   Firebase-ready
+//                                                              
 // STEP 1 (now): Uses localStorage auth (works offline, no backend)
 // STEP 2 (later): Swap FIREBASE_CONFIG and set USE_FIREBASE = true
 //                 Everything else stays identical.
-// ═══════════════════════════════════════════════════════════════
+//                                                                
 
-// ── Backend API URL ──────────────────────────────────────────────
+//    Backend API URL                                               
 const API_URL = "https://recordchief-backend-production-019b.up.railway.app";
 
-// ── Auth API — calls the real backend ────────────────────────────
+//    Auth API   calls the real backend                             
 const AuthAPI = {
 
   async signUp({ name, email, phone, location, password, sectors }) {
@@ -921,8 +921,8 @@ const AuthAPI = {
     }
   },
 
-  // Simple hash for offline password verification (not cryptographic — just a fingerprint)
-  // Immediate push then pull — call after any data write when online
+  // Simple hash for offline password verification (not cryptographic   just a fingerprint)
+  // Immediate push then pull   call after any data write when online
   async syncNow(uid) {
     if (!navigator.onLine) return;
     await this.syncToServer(uid).catch(() => {});
@@ -968,7 +968,7 @@ const AuthAPI = {
       }));
       return { ok: true, user };
     } catch(e) {
-      // Network failed or timed out — try offline fallback
+      // Network failed or timed out   try offline fallback
       const offlineRec = (() => { try { return JSON.parse(localStorage.getItem(`rc_offline_${emailKey}`)); } catch { return null; } })();
       const session    = (() => { try { return JSON.parse(localStorage.getItem("rc_session")); } catch { return null; } })();
       const token      = localStorage.getItem("rc_token");
@@ -1090,7 +1090,7 @@ const AuthAPI = {
     } catch(e) { /* silent — data safe locally */ }
   },
 
-  // Pull ALL data from server and restore to localStorage — triggers UI refresh
+  // Pull ALL data from server and restore to localStorage   triggers UI refresh
   async syncFromServer(uid) {
     const token = localStorage.getItem("rc_token");
     if (!token || !navigator.onLine) return;
@@ -1119,7 +1119,7 @@ const AuthAPI = {
             localVal = raw ? JSON.parse(raw) : null;
           }
 
-          // Server ALWAYS wins — it's the single source of truth
+          // Server ALWAYS wins   it's the single source of truth
           // Exception: if server returns empty array but we have local data,
           // keep local (protects against Railway cold-start empty response)
           if (Array.isArray(serverVal) && Array.isArray(localVal)) {
@@ -1700,7 +1700,7 @@ function SalesRepScreen({ user }) {
   const fieldsKey   = `sl_sales_fields_${user.uid}`;
   const groupsKey   = `sl_sales_groups_${user.uid}`; // archived groups
 
-  // Groups = array of { id, name, fields[], entries[] }  — archived sets
+  // Groups = array of { id, name, fields[], entries[] }    archived sets
   const [groups,  setGroups]  = useLocalState(groupsKey, []);
   // Active entries (current group)
   const [entries, setEntries] = useLocalState(storageKey, []);
@@ -1730,7 +1730,7 @@ function SalesRepScreen({ user }) {
 
   const showToast = (msg, type="success") => setToast({ msg, type });
 
-  // ── Create new group: archive current entries+fields → fresh slate ──
+  //    Create new group: archive current entries+fields   fresh slate   
   const createNewGroup = () => {
     const name = newGroupName.trim() || `Group ${(groups.length || 0) + 1}`;
     // Archive existing entries+fields into a group
@@ -1753,7 +1753,7 @@ function SalesRepScreen({ user }) {
     showToast(`"${name}" archived. New group started.`);
   };
 
-  // ── Save fields for current group ──
+  //    Save fields for current group   
   const saveCurrentFields = (combined) => {
     setFields(combined);
     setDraftFields([]);
@@ -2151,7 +2151,7 @@ function SalesRepScreen({ user }) {
                 const headers = gFields.map(f => f.name);
                 const rows = grp.entries.map(e => gFields.map(f => e[f.id] || ""));
                 const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-                const sheetName = (grp.name||"Group").slice(0,31).replace(/[\/:*?[\]]/g,"");
+                const sheetName = (grp.name||"Group").slice(0,31).replace(/[^a-zA-Z0-9 _-]/g,"").slice(0,31);
                 XLSX.utils.book_append_sheet(wb, ws, sheetName);
               });
               if (wb.SheetNames.length === 0) { showToast("No data to export","error"); return; }
@@ -2913,7 +2913,7 @@ function FarmScreen({ user }) {
     Others:     { icon: "📦", bg: "#F4F6FA", color: "#6B7280" },
   };
 
-  // ── Multi-farm: farms list stored separately ──
+  //    Multi-farm: farms list stored separately   
   const farmsKey    = `sl_farms_${user.uid}`;
   const expKey      = (fid) => `sl_farm_${user.uid}_${fid}`;
   const legacyKey   = `sl_farm_${user.uid}`;  // old single-farm key
@@ -2933,11 +2933,11 @@ function FarmScreen({ user }) {
 
   const showToast = (msg, type = "success") => setToast({ msg, type });
 
-  // ── Migrate legacy single-farm data on first load ──
+  //    Migrate legacy single-farm data on first load   
   useEffect(() => {
     let initialFarms = farms;
     if (!initialFarms) {
-      // First time — check if there's legacy data
+      // First time   check if there's legacy data
       const legacyData = (() => { try { return JSON.parse(localStorage.getItem(legacyKey)) || []; } catch { return []; } })();
       const firstFarm = { id: uid(), name: "My Farm", createdAt: TS() };
       initialFarms = [firstFarm];
@@ -2952,14 +2952,14 @@ function FarmScreen({ user }) {
     }
   }, []);
 
-  // ── Load expenses when active farm changes ──
+  //    Load expenses when active farm changes   
   useEffect(() => {
     if (!activeFarm) return;
     const raw = (() => { try { return JSON.parse(localStorage.getItem(expKey(activeFarm))) || []; } catch { return []; } })();
     setExpenses(raw);
   }, [activeFarm]);
 
-  // ── Persist expenses to localStorage whenever they change ──
+  //    Persist expenses to localStorage whenever they change   
   useEffect(() => {
     if (!activeFarm) return;
     localStorage.setItem(expKey(activeFarm), JSON.stringify(expenses));
@@ -3943,7 +3943,7 @@ function DebtCreditScreen({ user }) {
     </div>
   );
 
-  // Theme palette — entire UI shifts based on active tab
+  // Theme palette   entire UI shifts based on active tab
   const debtOutstanding = records.filter(r => r.type === "debt" && !r.settled).length;
   const debtAllClear = !isCredit && debtOutstanding === 0;
 
@@ -3963,7 +3963,7 @@ function DebtCreditScreen({ user }) {
     inactiveBg: "#EDF7EE",
     inactiveColor: "#1D6F42",
   } : debtAllClear ? {
-    // All debts cleared — calming blue theme
+    // All debts cleared   calming blue theme
     bg:        "#EFF6FF",
     bannerBg:  `linear-gradient(135deg, #1E3A8A 0%, ${COLORS.primaryDark} 60%, ${COLORS.primary} 100%)`,
     surface:   "#fff",
@@ -5540,7 +5540,7 @@ function SyncHistoryScreen({ user }) {
   const [showBackup, setShowBackup] = useState(false);
   const lastSync = localStorage.getItem("rc_last_sync");
 
-  // Weekly backup prompt — show if last backup was >7 days ago
+  // Weekly backup prompt   show if last backup was >7 days ago
   const lastBackupKey = `rc_last_backup_${user.uid}`;
   const lastBackup    = localStorage.getItem(lastBackupKey);
   const daysSinceBackup = lastBackup
@@ -5899,7 +5899,7 @@ function App() {
     document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
 
-  // ── Back button / Android back gesture handler ──────────────
+  //    Back button / Android back gesture handler               
   useEffect(() => {
     // Push initial state so back button has somewhere to return to
     window.history.pushState({ screen: "app", navTab: "home" }, "");
@@ -5918,13 +5918,13 @@ function App() {
           window.history.pushState({ screen: "app", navTab: prevTab }, "");
           return newHistory;
         }
-        // Already at home — go to home if not there
+        // Already at home   go to home if not there
         if (navTab !== "home") {
           setNavTab("home");
           window.history.pushState({ screen: "app", navTab: "home" }, "");
           return ["home"];
         }
-        // At home — push state again to prevent exit on first press
+        // At home   push state again to prevent exit on first press
         window.history.pushState({ screen: "app", navTab: "home" }, "");
         return prev;
       });
@@ -5934,12 +5934,12 @@ function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [screen, navTab]);
 
-  // Real-time sync — push changes every 30s, pull latest every 15s
+  // Real-time sync   push changes every 30s, pull latest every 15s
   useEffect(() => {
     if (!user?.uid) return;
     const uid = user.uid;
 
-    // ── Adaptive intervals ──────────────────────────────
+    //    Adaptive intervals                               
     // Active (user interacted in last 2 min): push 30s / pull 15s
     // Idle  (no interaction for 2+ min):      push 2min / pull 60s
     // Background (page hidden):               pause entirely
@@ -6076,7 +6076,7 @@ function App() {
     return () => clearTimeout(timer);
   }, [user?.uid]);
 
-  // Real-time notification count — polls every 3 seconds
+  // Real-time notification count   polls every 3 seconds
   useEffect(() => {
     const compute = () => {
       if (!user?.uid) return;
@@ -6250,7 +6250,7 @@ function App() {
     const _days = _lb ? Math.floor((Date.now() - new Date(_lb)) / 86400000) : 999;
     if (_days >= 7) setTimeout(() => setNavTab("synclog"), 4000);
 
-    // Pull latest data from server — also refresh profile to get latest sectors
+    // Pull latest data from server   also refresh profile to get latest sectors
     const token = localStorage.getItem("rc_token");
     if (token) {
       fetch(`${API_URL}/api/auth/me`, {
@@ -6468,7 +6468,7 @@ function App() {
     : navTab === "notifications" ? "🔔 Notifications"
     : sectorLabel;
 
-  // Onboarding — show once after first login
+  // Onboarding   show once after first login
   if (!showOnboarding && user) return (
     <>
       <style>{css}</style>
@@ -6482,7 +6482,7 @@ function App() {
     </>
   );
 
-  // Sidebar active accent — matches each section's theme colour
+  // Sidebar active accent   matches each section's theme colour
   const sidebarAccent = (() => {
     if (navTab === "sector") {
       if (sector === "farm")  return { border: "#40916C", bg: "rgba(29,111,66,0.25)" };
@@ -6491,7 +6491,7 @@ function App() {
     }
     if (navTab === "debtcredit") return { border: "#86C99A", bg: "rgba(29,111,66,0.20)" };
     if (navTab === "history")    return { border: "#34D399", bg: "rgba(5,150,105,0.18)" };
-    // home, profile, manageSectors — default blue
+    // home, profile, manageSectors   default blue
     return { border: "#60A5FA", bg: "rgba(37,99,235,0.25)" };
   })();
 
