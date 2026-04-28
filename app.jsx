@@ -383,13 +383,15 @@ function useLocalState(key, init) {
       try {
         localStorage.setItem(key, JSON.stringify(next));
         IDB.set(key, next).catch(() => {});
-        // Trigger immediate push 500ms after any data write
-        clearTimeout(window._syncPushTimer);
-        window._syncPushTimer = setTimeout(() => {
-          const token = localStorage.getItem("rc_token");
-          const uid = (() => { try { return JSON.parse(localStorage.getItem("rc_session"))?.uid; } catch { return null; } })();
-          if (token && uid && navigator.onLine) AuthAPI.syncToServer(uid).catch(() => {});
-        }, 500);
+        // Trigger immediate push after data write (debounced via shared timer)
+        if (typeof window !== "undefined") {
+          clearTimeout(window.__rcSyncTimer);
+          window.__rcSyncTimer = setTimeout(() => {
+            const _tok = localStorage.getItem("rc_token");
+            const _uid = (() => { try { return JSON.parse(localStorage.getItem("rc_session")||"{}").uid; } catch { return null; } })();
+            if (_tok && _uid && navigator.onLine) AuthAPI.syncToServer(_uid).catch(() => {});
+          }, 800);
+        }
       } catch {}
       return next;
     });
@@ -1026,7 +1028,7 @@ const AuthAPI = {
         return raw ? JSON.parse(raw) : null;
       };
 
-      const [inv, sales, farm, entries, fields, debt] = await Promise.all([
+      const [inv, sales, farm, entries, salesGroups, fields, debt] = await Promise.all([
         read(`sl_inv_${uid}`),
         read(`sl_shopsales_${uid}`),
         // Read all farm expenses (multi-farm: merge all farm-specific keys)
@@ -1051,6 +1053,7 @@ const AuthAPI = {
           return raw ? JSON.parse(raw) : [];
         })(),
         read(`sl_sales_${uid}`),
+        read(`sl_sales_groups_${uid}`),
         read(`sl_sales_fields_${uid}`),
         read(`sl_debt_${uid}`),
       ]);
@@ -1062,6 +1065,7 @@ const AuthAPI = {
         shopSales:    sales  || [],
         farmExpenses: isStaff ? undefined : (farm    || []),
         salesEntries: isStaff ? undefined : (entries || []),
+        salesGroups:  isStaff ? undefined : (salesGroups || []),
         salesFields:  isStaff ? undefined : (fields  || null),
         debtRecords:  isStaff ? undefined : (debt    || []),
         settings: {
@@ -1149,6 +1153,7 @@ const AuthAPI = {
         safeApply(`sl_sales_${uid}`,        data.salesEntries, "Customer Records"),
         safeApply(`sl_sales_fields_${uid}`, data.salesFields,  "Sales Fields"),
         safeApply(`sl_debt_${uid}`,         data.debtRecords,  "Debt Records"),
+        safeApply(`sl_sales_groups_${uid}`,  data.salesGroups || [], "Sales Groups"),
       ]);
 
       if (data.settings?.darkMode !== undefined) {
@@ -1157,9 +1162,7 @@ const AuthAPI = {
 
       localStorage.setItem("rc_last_sync", new Date().toISOString());
 
-      if (changed) {
-        window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
-      }
+      window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
     } catch(e) { /* silent */ }
   },
 
@@ -1693,74 +1696,71 @@ function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview
 
 // ===================== SALES REP MODE =====================
 function SalesRepScreen({ user }) {
-  const storageKey   = `sl_sales_${user.uid}`;
-  const fieldsKey    = `sl_sales_fields_${user.uid}`;
-  const fieldSetsKey = `sl_sales_fieldsets_${user.uid}`;
+  const storageKey  = `sl_sales_${user.uid}`;
+  const fieldsKey   = `sl_sales_fields_${user.uid}`;
+  const groupsKey   = `sl_sales_groups_${user.uid}`; // archived groups
 
-  // Field sets: array of { id, name, fields[] }
-  // Each set groups entries that share the same custom fields
-  const [fieldSets, setFieldSets] = useLocalState(fieldSetsKey, null);
-  const [activeSetId, setActiveSetId] = useState(null);
-
-  // All entries — keyed by their fieldSetId
+  // Groups = array of { id, name, fields[], entries[] }  — archived sets
+  const [groups,  setGroups]  = useLocalState(groupsKey, []);
+  // Active entries (current group)
   const [entries, setEntries] = useLocalState(storageKey, []);
-  const [fields, setFields] = useLocalState(fieldsKey, null);
-
-  // Derived: active field set
-  const allFieldSets = fieldSets || (fields ? [{ id: "default", name: "Records", fields }] : null);
-  const currentSet   = allFieldSets?.find(s => s.id === activeSetId) || allFieldSets?.[0] || null;
-  const currentSetFields = currentSet?.fields || fields;
-
-  // Entries belonging to active set
-  const setEntries2 = useCallback((updater) => {
-    setEntries(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      return next;
-    });
-  }, [setEntries]);
-
-  const activeEntries = activeSetId
-    ? entries.filter(e => e._setId === activeSetId || (!e._setId && activeSetId === (allFieldSets?.[0]?.id)))
-    : entries;
-  const [tab, setTab] = useState("entry");
-  const [search, setSearch] = useState("");
-  const [toast, setToast] = useState(null);
-  const [form, setForm] = useState({});
-  const [errors, setErrors] = useState({});
-  const [editId, setEditId] = useState(null);
-  const [setupMode, setSetupMode] = useState(false);
-  const [draftFields, setDraftFields] = useState([]);
-  const [showExport, setShowExport] = useState(false);
-  const [showEntryForm, setShowEntryForm] = useState(false);
-  const [sortBy, setSortBy] = useState("date_desc");
-  const [showFilters, setShowFilters] = useState(false);
-  const [showManageFields, setShowManageFields] = useState(false);
-  const [showFieldChoice, setShowFieldChoice] = useState(false);
-  const [viewEntry, setViewEntry] = useState(null); // entry to view
-
-  const showToast = (msg, type = "success") => { setToast({ msg, type }); };
-
-  // Save a new field set without touching existing entries or their sets
-  const saveAsNewSet = (setName, newCustomFields) => {
-    const combined = [...defaultFields, ...newCustomFields.filter(f => f.name.trim())];
-    const newSet = { id: uid(), name: setName || `Set ${(allFieldSets?.length || 0) + 1}`, fields: combined };
-    const updatedSets = [...(allFieldSets || []), newSet];
-    setFieldSets(updatedSets);
-    setActiveSetId(newSet.id);
-    // Don't touch setFields — keeps existing entries displaying correctly
-    showToast(`"${newSet.name}" created! Switch between sets using tabs above.`);
-  };
+  // Active fields (current group)
+  const [fields,  setFields]  = useLocalState(fieldsKey, null);
 
   const defaultFields = [
-    { id: "f_date", name: "Date", type: "Date" },
+    { id: "f_date",  name: "Date",  type: "Date" },
     { id: "f_notes", name: "Notes", type: "Text" },
   ];
-  const activeFields = currentSetFields || fields || defaultFields;
+  const activeFields = fields || defaultFields;
 
-  useEffect(() => {
-    // Show manage fields on first open if no fields defined
-    if (!fields) setShowManageFields(false); // handled via inline prompt
-  }, []);
+  const [search,          setSearch]          = useState("");
+  const [toast,           setToast]           = useState(null);
+  const [form,            setForm]            = useState({});
+  const [errors,          setErrors]          = useState({});
+  const [editId,          setEditId]          = useState(null);
+  const [setupMode,       setSetupMode]       = useState(false);
+  const [draftFields,     setDraftFields]     = useState([]);
+  const [showExport,      setShowExport]      = useState(false);
+  const [showEntryForm,   setShowEntryForm]   = useState(false);
+  const [sortBy,          setSortBy]          = useState("date_desc");
+  const [showManageFields,setShowManageFields]= useState(false);
+  const [viewEntry,       setViewEntry]       = useState(null);
+  const [newGroupName,    setNewGroupName]    = useState("");
+  const [showNewGroup,    setShowNewGroup]    = useState(false);
+
+  const showToast = (msg, type="success") => setToast({ msg, type });
+
+  // ── Create new group: archive current entries+fields → fresh slate ──
+  const createNewGroup = () => {
+    const name = newGroupName.trim() || `Group ${(groups.length || 0) + 1}`;
+    // Archive existing entries+fields into a group
+    if (entries.length > 0 || (fields && fields.length > 0)) {
+      const archived = {
+        id:        uid(),
+        name,
+        fields:    fields || defaultFields,
+        entries:   entries,
+        createdAt: TS(),
+      };
+      setGroups(prev => [archived, ...(prev || [])]);
+    }
+    // Reset current to blank
+    setEntries([]);
+    setFields(null);
+    setForm({});
+    setNewGroupName("");
+    setShowNewGroup(false);
+    showToast(`"${name}" archived. New group started.`);
+  };
+
+  // ── Save fields for current group ──
+  const saveCurrentFields = (combined) => {
+    setFields(combined);
+    setDraftFields([]);
+    setSetupMode(false);
+    setShowManageFields(false);
+    showToast("Fields saved!");
+  };
 
   const saveEntry = () => {
     const e = {};
@@ -1768,195 +1768,116 @@ function SalesRepScreen({ user }) {
       if (!form[f.id] && f.id !== "f_notes") e[f.id] = `${f.name} is required`;
     });
     if (Object.keys(e).length) { setErrors(e); return; }
-    const setId = currentSet?.id || "default";
-    const entry = { id: editId || uid(), ...form, _setId: setId, createdAt: TS() };
+    const entry = { id: editId || uid(), ...form, createdAt: TS() };
     if (editId) {
       setEntries(prev => prev.map(x => x.id === editId ? entry : x));
-      setEditId(null);
-      showToast("Entry updated!");
+      setEditId(null); showToast("Entry updated!");
     } else {
       setEntries(prev => [entry, ...prev]);
-      showToast("Entry saved!");
+      showToast("Record saved!");
     }
-    setForm({});
-    setShowEntryForm(false);
+    setForm({}); setErrors({}); setShowEntryForm(false);
   };
 
-  const deleteEntry = (id) => { setEntries(prev => prev.filter(x => x.id !== id)); showToast("Entry deleted", "error"); };
-
-  const startEdit = (entry) => {
-    setForm({ ...entry });
-    setEditId(entry.id);
-  };
-
-  const finishSetup = (setName) => {
-    const combined = [...defaultFields, ...draftFields.filter(f => f.name.trim())];
-    // If no field sets exist yet, init the first one
-    if (!allFieldSets || allFieldSets.length === 0) {
-      const firstSet = { id: "default", name: setName || "Records", fields: combined };
-      setFieldSets([firstSet]);
-      setActiveSetId("default");
-      setFields(combined); // only set global for the very first setup
-    } else {
-      // Update existing active set's fields without touching other sets
-      const updatedSets = (allFieldSets || []).map(s =>
-        s.id === (currentSet?.id || "default") ? { ...s, fields: combined } : s
-      );
-      setFieldSets(updatedSets);
-    }
-    setDraftFields([]);
-    setSetupMode(false);
-    showToast("Columns saved!");
-  };
-
-  // setupMode is now handled inline in the bottom-sheet modal
-
-  const renderField = (field, isFirst = false) => {
-    const val = form[field.id] || "";
-    const err = errors[field.id];
-
-    // Prominent first-field wrapper style
-    const firstWrap = isFirst ? {
-      background: COLORS.primaryLight,
-      border: `1.5px solid ${COLORS.primary}40`,
-      borderRadius: 14,
-      padding: "14px 14px 10px",
-      marginBottom: "1rem",
-    } : {};
-    const firstLabel = isFirst ? { fontSize: 11, fontWeight: 700, color: COLORS.primary, textTransform: "uppercase", letterSpacing: "0.06em" } : {};
-    const firstInput = isFirst ? { fontSize: 16, fontWeight: 600, border: "none", background: "#fff", borderRadius: 10, padding: "12px 14px", boxShadow: "0 1px 4px rgba(37,99,235,0.10)" } : {};
-
-    if (field.type === "Date") return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <input type="date" className={`form-input${err ? " error" : ""}`} style={firstInput} value={val || TODAY()} onChange={e => setForm(p => ({ ...p, [field.id]: e.target.value }))} />
-        {err && <div className="form-error">{err}</div>}
-      </div>
-    );
-    if (field.type === "Number") return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <input type="number" className={`form-input${err ? " error" : ""}`} style={firstInput} placeholder="0" value={val} onChange={e => setForm(p => ({ ...p, [field.id]: e.target.value }))} />
-        {err && <div className="form-error">{err}</div>}
-      </div>
-    );
-    if (field.type === "Yes/No") return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <div style={{ display: "flex", gap: 8 }}>
-          {["Yes", "No"].map(opt => (
-            <button key={opt} className={`btn btn-sm${val === opt ? " btn-primary" : " btn-outline"}`} style={{ flex: 1, ...(isFirst ? { fontWeight: 700, fontSize: 14 } : {}) }} onClick={() => setForm(p => ({ ...p, [field.id]: opt }))}>{opt}</button>
-          ))}
-        </div>
-      </div>
-    );
-    // Text / Notes
-    return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <textarea className={`form-input${err ? " error" : ""}`}
-          style={{ ...firstInput, ...(isFirst ? { resize: "none" } : {}) }}
-          rows={isFirst ? 2 : (field.name === "Notes" ? 3 : 1)}
-          placeholder={isFirst ? `Enter ${field.name}…` : `Enter ${field.name}`}
-          value={val}
-          onChange={e => setForm(p => ({ ...p, [field.id]: e.target.value }))} />
-        {err && <div className="form-error">{err}</div>}
-      </div>
-    );
-  };
-
-  const openAdd = () => {
-    setEditId(null);
-    setErrors({});
-    if (fields) {
-      // Fields already set up — ask user: keep or reset
-      setShowFieldChoice(true);
-    } else {
-      // First time — go straight to field setup inside form
-      const preForm = {};
-      defaultFields.forEach(f => { if (f.type === "Date") preForm[f.id] = TODAY(); });
-      setForm(preForm);
-      setShowManageFields(true);
-      setShowEntryForm(true);
-    }
-  };
-
-  const proceedWithExistingFields = () => {
-    const preForm = {};
-    activeFields.forEach(f => { if (f.type === "Date") preForm[f.id] = TODAY(); });
-    setForm(preForm);
-    setShowFieldChoice(false);
-    setShowManageFields(false);
-    setShowEntryForm(true);
-  };
-
-  const proceedWithNewFields = () => {
-    setFields(null);
-    setDraftFields([]);
-    const preForm = {};
-    defaultFields.forEach(f => { if (f.type === "Date") preForm[f.id] = TODAY(); });
-    setForm(preForm);
-    setShowFieldChoice(false);
-    setShowManageFields(true);
-    setShowEntryForm(true);
+  const deleteEntry = (id) => {
+    setEntries(prev => prev.filter(e => e.id !== id));
+    showToast("Deleted", "error");
   };
 
   const openEdit = (entry) => {
-    setForm({ ...entry });
-    setEditId(entry.id);
-    setErrors({});
+    setEditId(entry.id); setForm(entry);
     setShowEntryForm(true);
+    activeFields.forEach(f => { if (f.type === "Date" && !entry[f.id]) setForm(p => ({...p, [f.id]: TODAY()})); });
   };
 
-  // Split fields: date+notes go last, custom fields first
-  const dateNoteIds = new Set(["f_date", "f_notes"]);
-  const customFields   = activeFields.filter(f => !dateNoteIds.has(f.id));
-  const dateNoteFields = activeFields.filter(f => dateNoteIds.has(f.id));
-  const orderedFields  = [...customFields, ...dateNoteFields];
+  // Sorted current entries
+  const orderedFields = activeFields;
+  const dateId  = activeFields.find(f => f.type === "Date")?.id || "f_date";
+  const firstId = orderedFields[0]?.id;
 
-  const filtered = (() => {
-    let list = entries.filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()));
-    const firstId = orderedFields[0]?.id;
-    const dateId  = activeFields.find(f => f.type === "Date")?.id || "f_date";
-    list = [...list].sort((a, b) => {
-      switch (sortBy) {
-        case "date_asc":  return (a[dateId] || a.createdAt) < (b[dateId] || b.createdAt) ? -1 : 1;
-        case "date_desc": return (a[dateId] || a.createdAt) > (b[dateId] || b.createdAt) ? -1 : 1;
-        case "name_asc":  return (a[firstId] || "").localeCompare(b[firstId] || "");
-        case "name_desc": return (b[firstId] || "").localeCompare(a[firstId] || "");
-        case "newest":    return new Date(b.createdAt) - new Date(a.createdAt);
-        case "oldest":    return new Date(a.createdAt) - new Date(b.createdAt);
-        default:          return 0;
+  const filtered = [...entries]
+    .filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()))
+    .sort((a,b) => {
+      switch(sortBy) {
+        case "date_desc": return (a[dateId]||a.createdAt) > (b[dateId]||b.createdAt) ? -1 : 1;
+        case "date_asc":  return (a[dateId]||a.createdAt) < (b[dateId]||b.createdAt) ? -1 : 1;
+        case "name_asc":  return (a[firstId]||"").localeCompare(b[firstId]||"");
+        case "name_desc": return (b[firstId]||"").localeCompare(a[firstId]||"");
+        case "newest":    return new Date(b.createdAt)-new Date(a.createdAt);
+        default: return 0;
       }
     });
-    return list;
-  })();
-
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
+    <div style={{ paddingBottom: 80 }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"0.75rem" }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>👥 Customer Records</div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted }}>{entries.length} customer record{entries.length !== 1 ? "s" : ""}</div>
+          <div style={{ fontSize:18, fontWeight:700, color:"var(--text)" }}>👥 Customer Records</div>
+          <div style={{ fontSize:12, color:"var(--text-muted)" }}>
+            {entries.length} record{entries.length!==1?"s":""}{groups.length>0 ? ` · ${groups.length} archived group${groups.length!==1?"s":""}` : ""}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn btn-success btn-sm" onClick={() => setShowExport(true)}><Icon name="download" size={14} /> Export</button>
+        <div style={{ display:"flex", gap:6 }}>
+          <button className="btn btn-success btn-sm" onClick={() => setShowExport(true)}>
+            <Icon name="download" size={14} /> Export
+          </button>
+          <button className="btn btn-sm" onClick={() => setShowNewGroup(true)}
+            style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"6px 12px", borderRadius:8, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+            + New Group
+          </button>
         </div>
       </div>
 
-      {/* History — always visible */}
-      <SmartSearch value={search} onChange={setSearch} placeholder="Search entries…" resultCount={filtered.length} />
+      {/* Group tabs — current + all archived */}
+      {groups.length > 0 && (
+        <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:"0.75rem", paddingBottom:4, scrollbarWidth:"none" }}>
+          <div style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, background:"var(--primary)", color:"#fff", fontSize:12, fontWeight:700 }}>
+            📋 Current
+          </div>
+          {(groups||[]).map(grp => (
+            <div key={grp.id} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, background:"var(--surface)", border:"1px solid var(--border)", fontSize:12, fontWeight:600, color:"var(--text-muted)", whiteSpace:"nowrap" }}>
+              📁 {grp.name} ({grp.entries?.length||0})
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Sort dropdown */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
-        <label style={{ fontSize: 13, color: COLORS.textMuted, fontWeight: 600, flexShrink: 0 }}>Sort by:</label>
-        <select
-          value={sortBy}
-          onChange={e => setSortBy(e.target.value)}
-          className="form-input"
-          style={{ flex: 1, padding: "9px 12px", fontSize: 14 }}
-        >
+      {/* Fields setup prompt */}
+      {!fields && (
+        <div className="card" style={{ marginBottom:"0.75rem", textAlign:"center", padding:"1.5rem" }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>🛠️</div>
+          <div style={{ fontSize:14, fontWeight:700, color:"var(--text)", marginBottom:6 }}>Set up your record fields</div>
+          <div style={{ fontSize:12, color:"var(--text-muted)", marginBottom:14, lineHeight:1.6 }}>
+            Define the columns for this group (e.g. Customer Name, Product, Amount).
+          </div>
+          <button className="btn btn-primary" onClick={() => { setSetupMode(true); setShowEntryForm(true); }}>
+            ⚙️ Set Up Fields
+          </button>
+        </div>
+      )}
+
+      {/* Manage fields row */}
+      {fields && (
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:"0.6rem", flexWrap:"wrap" }}>
+          <div style={{ display:"flex", gap:4, flex:1, flexWrap:"wrap" }}>
+            {activeFields.filter(f=>f.id!=="f_notes").map(f=>(
+              <span key={f.id} style={{ background:"var(--bg)", border:"1px solid var(--border)", borderRadius:6, padding:"3px 8px", fontSize:11, fontWeight:600, color:"var(--text-muted)" }}>
+                {f.name}
+              </span>
+            ))}
+          </div>
+          <button onClick={() => { setDraftFields(activeFields.filter(f=>f.id!=="f_date"&&f.id!=="f_notes")); setShowManageFields(true); setShowEntryForm(true); }}
+            style={{ background:"none", border:"none", color:"var(--primary)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Inter',sans-serif", whiteSpace:"nowrap" }}>
+            ✏️ Edit fields
+          </button>
+        </div>
+      )}
+
+      {/* Search + sort */}
+      <SmartSearch value={search} onChange={setSearch} placeholder="Search records…" resultCount={filtered.length} />
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:"0.75rem" }}>
+        <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="form-input" style={{ flex:1, padding:"9px 12px", fontSize:13 }}>
           <option value="date_desc">📅 Newest date</option>
           <option value="date_asc">📅 Oldest date</option>
           <option value="name_asc">🔤 A → Z</option>
@@ -1965,91 +1886,90 @@ function SalesRepScreen({ user }) {
         </select>
       </div>
 
-      {/* ── Historical groups ── */}
-      {groups.length > 0 && groups.map((grp) => {
-        const grpFiltered = (grp.entries || []).filter(e =>
-          !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase())
-        );
-        if (grpFiltered.length === 0) return null;
-        const grpFields = grp.fields || [];
-        const firstF    = grpFields[0];
+      {/* Archived groups */}
+      {(groups||[]).map((grp) => {
+        const grpFiltered = (grp.entries||[]).filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()));
+        if (grpFiltered.length === 0 && search) return null;
+        const gFields = grp.fields || defaultFields;
+        const gFirst  = gFields[0];
         return (
           <div key={grp.id} style={{ marginBottom:"1rem" }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
               <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                📁 {grp.name} · {grp.entries.length} record{grp.entries.length!==1?"s":""}
+                📁 {grp.name} · {grp.entries?.length||0} record{(grp.entries?.length||0)!==1?"s":""}
               </div>
               <button onClick={() => {
-                if(!window.confirm("Delete this entire group and all its records?")) return;
-                const upd = groups.filter(g => g.id !== grp.id);
-                setGroups(upd); localStorage.setItem(groupsKey, JSON.stringify(upd));
+                if(!window.confirm(`Delete "${grp.name}" and all its records? This cannot be undone.`)) return;
+                setGroups(prev => (prev||[]).filter(g => g.id !== grp.id));
+                showToast("Group deleted","error");
               }} style={{ background:"none", border:"none", color:COLORS.danger, fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
                 Delete group
               </button>
             </div>
             <div className="card" style={{ padding:0, overflow:"hidden" }}>
               {grpFiltered.slice(0,5).map((e,i) => (
-                <div key={e.id||i} style={{ padding:"10px 14px", borderBottom: i<Math.min(grpFiltered.length,5)-1?`0.5px solid var(--border)`:"none", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div key={e.id||i} style={{ padding:"10px 14px", borderBottom:i<Math.min(grpFiltered.length,5)-1?`0.5px solid var(--border)`:"none", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                   <div>
-                    <div style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{firstF?(e[firstF.id]||"—"):"—"}</div>
+                    <div style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{gFirst?(e[gFirst.id]||"—"):"—"}</div>
                     <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
-                      {grpFields.slice(1,3).map(f=>e[f.id]).filter(Boolean).join(" · ")}
+                      {gFields.slice(1,3).map(f=>e[f.id]).filter(Boolean).join(" · ")}
                     </div>
                   </div>
                   <div style={{ fontSize:11, color:"var(--text-muted)" }}>{e.f_date||e.date||""}</div>
                 </div>
               ))}
-              {grpFiltered.length>5 && <div style={{ padding:"8px 14px", fontSize:12, color:"var(--primary)", fontWeight:600 }}>+{grpFiltered.length-5} more</div>}
+              {grpFiltered.length>5 && (
+                <div style={{ padding:"8px 14px", fontSize:12, color:"var(--primary)", fontWeight:600 }}>+{grpFiltered.length-5} more records</div>
+              )}
             </div>
           </div>
         );
       })}
 
+      {/* Current records header */}
       {entries.length > 0 && groups.length > 0 && (
         <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
           📋 Current Records
         </div>
       )}
 
-      {filtered.length === 0 ? (
-        <div className="empty-state"><div class="empty-icon">👥</div><h3>No customer records yet</h3><p>Tap the + button to add your first record</p></div>
+      {/* Current entries list */}
+      {filtered.length === 0 && entries.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon">👥</div>
+          <h3>No records yet</h3>
+          <p>Tap + to add your first customer record</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state"><h3>No results</h3><p>Try a different search</p></div>
       ) : (
         <div className="card">
           {filtered.map(entry => {
-            const firstField = orderedFields[0];
-            const firstVal   = entry[firstField?.id];
-            const otherFields = orderedFields.slice(1).filter(f => entry[f.id] && f.id !== "f_notes");
+            const customFields = activeFields.filter(f => f.id !== "f_date" && f.id !== "f_notes");
+            const mainField = customFields[0] || activeFields[0];
+            const subField  = customFields[1] || activeFields[1];
+            const amtField  = customFields.find(f => f.type === "Number") || customFields[customFields.length-1];
+            const dateF     = activeFields.find(f => f.type === "Date") || { id:"f_date" };
             return (
-              <div key={entry.id} style={{ padding: "12px 0", borderBottom: `0.5px solid ${COLORS.border}` }}>
-                {/* First field — prominent headline */}
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <div style={{ width: 38, height: 38, borderRadius: 10, background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <span style={{ fontSize: 16 }}>👤</span>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {firstVal || <span style={{ color: COLORS.textLight, fontStyle: "italic" }}>No {firstField?.name}</span>}
-                    </div>
-                    <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
-                      {new Date(entry.createdAt).toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })}
-                    </div>
-                    {otherFields.length > 0 && (
-                      <div style={{ display: "flex", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
-                        {otherFields.slice(0, 2).map(f => (
-                          <span key={f.id} style={{ fontSize: 11, background: COLORS.bg, border: `0.5px solid ${COLORS.border}`, borderRadius: 6, padding: "2px 8px", color: COLORS.textMuted }}>
-                            {f.name}: <strong style={{ color: COLORS.text }}>{entry[f.id]}</strong>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              <div key={entry.id} className="entry-row">
+                <div style={{ width:36, height:36, borderRadius:10, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, color:"var(--primary)", flexShrink:0 }}>
+                  {String(entry[mainField?.id]||"?")[0]?.toUpperCase()||"?"}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div className="entry-title">{entry[mainField?.id]||"—"}</div>
+                  <div className="entry-sub">{[entry[subField?.id], entry[dateF.id]].filter(Boolean).join(" · ")}</div>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
+                  {amtField && entry[amtField.id] && (
+                    <div className="entry-amount">{amtField.type==="Number"?NAIRA(entry[amtField.id]):entry[amtField.id]}</div>
+                  )}
+                  <div style={{ display:"flex", gap:4 }}>
                     <button className="btn btn-sm" onClick={() => setViewEntry(entry)}
-                      style={{ background: "var(--primary-light)", color: "var(--primary)", border: "none", padding: "6px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                      style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"5px 9px", borderRadius:7, fontSize:12, fontWeight:700, cursor:"pointer" }}>
                       View
                     </button>
-                    <button className="btn btn-sm btn-outline" onClick={() => openEdit(entry)}><Icon name="edit" size={13} /></button>
-                    <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(entry.id)}><Icon name="trash" size={13} /></button>
+                    <button className="btn btn-sm btn-outline" onClick={() => openEdit(entry)}><Icon name="edit" size={13}/></button>
+                    <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(entry.id)}><Icon name="trash" size={13}/></button>
                   </div>
                 </div>
               </div>
@@ -2059,277 +1979,191 @@ function SalesRepScreen({ user }) {
       )}
 
       {/* FAB */}
-      <button
-        onClick={openAdd}
-        title="New entry"
-        style={{
-          position: "fixed", bottom: "calc(28px + var(--fab-lift, 0px))", right: 28, zIndex: 200,
-          width: 56, height: 56, borderRadius: "50%",
-          background: COLORS.primary, color: "#fff", border: "none",
-          boxShadow: "0 4px 18px rgba(27,108,168,0.45)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.transform="scale(1.1)"; e.currentTarget.style.boxShadow="0 6px 24px rgba(27,108,168,0.55)"; }}
-        onMouseLeave={e => { e.currentTarget.style.transform="scale(1)";   e.currentTarget.style.boxShadow="0 4px 18px rgba(27,108,168,0.45)"; }}
-      >
+      <button onClick={() => { setShowEntryForm(true); setEditId(null); setForm({}); setErrors({}); setShowManageFields(false); setSetupMode(!fields); }}
+        style={{ position:"fixed", bottom:"calc(28px + var(--fab-lift,0px))", right:28, zIndex:200, width:56, height:56, borderRadius:"50%", background:"linear-gradient(135deg,#5B21B6,#7C3AED)", color:"#fff", border:"none", boxShadow:"0 4px 18px rgba(124,58,237,0.45)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
       </button>
 
-      {/* ── View Record Modal ── */}
-      {viewEntry && (
-        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}
-          onClick={() => setViewEntry(null)}>
-          <div style={{ background:"var(--surface)", borderRadius:24, width:"100%", maxWidth:480, maxHeight:"80vh", overflow:"hidden", display:"flex", flexDirection:"column", animation:"scaleIn 0.2s ease", boxShadow:"0 24px 60px rgba(0,0,0,0.3)" }}
+      {/* New Group modal */}
+      {showNewGroup && (
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setShowNewGroup(false)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:380, animation:"scaleIn 0.2s ease" }}
             onClick={e => e.stopPropagation()}>
-            {/* Header */}
-            <div style={{ padding:"20px 20px 14px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                <div style={{ width:42, height:42, borderRadius:12, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>👤</div>
-                <div>
-                  <div style={{ fontSize:17, fontWeight:800, color:"var(--text)" }}>
-                    {viewEntry[orderedFields[0]?.id] || "Customer Record"}
-                  </div>
-                  <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
-                    Added {new Date(viewEntry.createdAt).toLocaleDateString("en-NG", { day:"numeric", month:"short", year:"numeric" })}
-                  </div>
-                </div>
-              </div>
-              <button onClick={() => setViewEntry(null)} style={{ background:"var(--bg)", border:"none", width:32, height:32, borderRadius:"50%", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, color:"var(--text-muted)" }}>×</button>
+            <div style={{ fontSize:17, fontWeight:800, color:"var(--text)", marginBottom:6 }}>📁 Start New Group</div>
+            <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:16, lineHeight:1.6 }}>
+              Current records ({entries.length}) will be archived under the name you give them. You'll start fresh with a new set of fields.
             </div>
-
-            {/* Fields */}
-            <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
-              {orderedFields.map((f, i) => {
-                const val = viewEntry[f.id];
-                if (!val && val !== 0) return null;
-                return (
-                  <div key={f.id} style={{ marginBottom:14, paddingBottom:14, borderBottom: i < orderedFields.length - 1 ? `0.5px solid var(--border)` : "none" }}>
-                    <div style={{ fontSize:11, fontWeight:600, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>{f.name}</div>
-                    <div style={{ fontSize:15, fontWeight:f.id === orderedFields[0]?.id ? 700 : 500, color:"var(--text)", lineHeight:1.5, wordBreak:"break-word" }}>{val}</div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Actions */}
-            <div style={{ padding:"12px 20px 20px", borderTop:`1px solid var(--border)`, display:"flex", gap:10, flexShrink:0 }}>
-              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setViewEntry(null)}>Close</button>
-              <button className="btn btn-primary" style={{ flex:2 }} onClick={() => { openEdit(viewEntry); setViewEntry(null); }}>
-                ✏️ Edit Record
+            <label className="form-label">Name for the current group</label>
+            <input className="form-input" placeholder={`e.g. Jan 2026 Sales, Old Customers…`}
+              value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+              onKeyDown={e => e.key==="Enter" && createNewGroup()} autoFocus style={{ marginBottom:16 }}/>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setShowNewGroup(false)}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={createNewGroup}>
+                📁 Archive & Start New
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ── Field choice pop-up ── */}
-      {showFieldChoice && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 300,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: "rgba(0,0,0,0.45)",
-        }} onClick={() => setShowFieldChoice(false)}>
-          <div style={{
-            background: "#fff", borderRadius: 20, padding: "24px 20px",
-            width: "calc(100% - 48px)", maxWidth: 360,
-            boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
-            animation: "scaleIn 0.2s cubic-bezier(0.4,0,0.2,1)",
-          }} onClick={e => e.stopPropagation()}>
-
-            <div style={{ textAlign: "center", marginBottom: 20 }}>
-              <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: COLORS.text, marginBottom: 6 }}>New Entry</div>
-              <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                Would you like to keep your existing fields or start fresh with new ones?
-              </div>
-            </div>
-
-            {/* Current fields preview */}
-            <div style={{ background: COLORS.bg, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Current fields</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {activeFields.map(f => (
-                  <span key={f.id} style={{ fontSize: 11, fontWeight: 600, background: COLORS.primaryLight, color: COLORS.primary, border: `1px solid ${COLORS.primary}30`, borderRadius: 6, padding: "3px 9px" }}>
-                    {f.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <button onClick={proceedWithExistingFields} style={{
-                padding: "13px", border: "none", borderRadius: 12, cursor: "pointer",
-                background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.primaryDark})`,
-                color: "#fff", fontWeight: 700, fontSize: 14,
-                fontFamily: "'Inter', sans-serif",
-                boxShadow: "0 3px 10px rgba(37,99,235,0.3)",
-              }}>
-                ✅ Keep current fields
-              </button>
-              <button onClick={proceedWithNewFields} style={{
-                padding: "13px", border: `1.5px solid ${COLORS.border}`, borderRadius: 12, cursor: "pointer",
-                background: "#fff", color: COLORS.text, fontWeight: 600, fontSize: 14,
-                fontFamily: "'Inter', sans-serif",
-              }}>
-                🔄 Reset & create new fields
-              </button>
-            </div>
-
-            <button onClick={() => setShowFieldChoice(false)} style={{
-              width: "100%", marginTop: 12, background: "none", border: "none",
-              fontSize: 13, color: COLORS.textMuted, cursor: "pointer",
-              fontFamily: "'Inter', sans-serif", padding: "6px",
-            }}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      {/* Entry modal — centred, scrollable, never overflows screen */}
+      {/* Entry / Fields form bottom sheet */}
       {showEntryForm && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 300,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          padding: "16px",
-          background: "rgba(0,0,0,0.5)",
-        }} onClick={() => { setShowEntryForm(false); setShowManageFields(false); }}>
-          <div style={{
-            background: "#fff", borderRadius: 20,
-            padding: "0 0 4px",
-            width: "100%", maxWidth: 420,
-            maxHeight: "calc(100vh - 32px)",
-            display: "flex", flexDirection: "column",
-            boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-            animation: "scaleIn 0.22s cubic-bezier(0.4,0,0.2,1)",
-          }} onClick={e => e.stopPropagation()}>
-
-            {/* Sticky header */}
-            <div style={{ padding: "16px 18px 12px", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 10, background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>👤</div>
-                  <div style={{ fontSize: 17, fontWeight: 700 }}>{editId ? "Edit Record" : "New Customer Record"}</div>
-                </div>
-                <button onClick={() => { setShowEntryForm(false); setShowManageFields(false); setEditId(null); setForm({}); }} style={{ background: COLORS.bg, border: "none", cursor: "pointer", color: COLORS.textMuted, width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>×</button>
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          onClick={() => { setShowEntryForm(false); setSetupMode(false); setShowManageFields(false); setEditId(null); setForm({}); }}>
+          <div style={{ background:"var(--surface)", borderRadius:"22px 22px 0 0", width:"100%", maxWidth:520, maxHeight:"88vh", overflow:"hidden", display:"flex", flexDirection:"column" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:"18px 18px 10px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ fontSize:16, fontWeight:800, color:"var(--text)" }}>
+                {setupMode ? "⚙️ Set Up Fields" : showManageFields ? "✏️ Edit Fields" : editId ? "Edit Record" : "New Record"}
               </div>
+              <button onClick={() => { setShowEntryForm(false); setSetupMode(false); setShowManageFields(false); setEditId(null); setForm({}); }}
+                style={{ background:"var(--bg)", border:"none", width:30, height:30, borderRadius:"50%", cursor:"pointer", fontSize:18, color:"var(--text-muted)" }}>×</button>
             </div>
 
-            {/* Scrollable body */}
-            <div style={{ overflowY: "auto", padding: "16px 18px", flex: 1, WebkitOverflowScrolling: "touch" }}>
-
-            {editId && <div style={{ background: COLORS.amberLight, color: COLORS.amber, borderRadius: 8, padding: "7px 12px", fontSize: 12, marginBottom: 12, fontWeight: 500 }}>Editing existing entry</div>}
-
-            {/* First-time setup prompt if no custom fields yet */}
-            {!fields && !showManageFields && (
-              <div style={{ background: COLORS.primaryLight, border: `1px solid ${COLORS.primary}30`, borderRadius: 12, padding: "12px 14px", marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
-                <span style={{ fontSize: 20 }}>💡</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.primary }}>Customise your fields</div>
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>Date & Notes are included by default. Add custom fields for your business.</div>
-                </div>
-                <button onClick={() => setShowManageFields(true)} style={{ background: COLORS.primary, color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap" }}>Add Fields</button>
-              </div>
-            )}
-
-            {/* Entry fields */}
-            {orderedFields.map((field, i) => renderField(field, i === 0))}
-
-            {/* ── Manage fields section (collapsible) ── */}
-            <div style={{ marginTop: 8 }}>
-              <button onClick={() => setShowManageFields(v => !v)} style={{
-                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "10px 14px", background: COLORS.bg, border: `1px solid ${COLORS.border}`,
-                borderRadius: showManageFields ? "10px 10px 0 0" : 10,
-                cursor: "pointer", fontFamily: "'Inter', sans-serif",
-                fontSize: 13, fontWeight: 600, color: COLORS.textMuted,
-              }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <Icon name="settings" size={14} /> Manage fields
-                </span>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transition: "transform 0.2s", transform: showManageFields ? "rotate(180deg)" : "rotate(0deg)" }}><path d="M6 9l6 6 6-6"/></svg>
-              </button>
-
-              {showManageFields && (
-                <div style={{ border: `1px solid ${COLORS.border}`, borderTop: "none", borderRadius: "0 0 10px 10px", padding: "14px", background: "#fff" }}>
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 10 }}>
-                    Default fields (Date, Notes) are always included. Add your own below.
+            <div style={{ flex:1, overflowY:"auto", padding:"14px 18px" }}>
+              {(setupMode || showManageFields) ? (
+                <div>
+                  <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14, lineHeight:1.6 }}>
+                    Define the columns for this group. Date and Notes are always included.
                   </div>
-
-                  {/* Existing custom fields */}
-                  {draftFields.length === 0 && (fields || []).filter(f => !["f_date","f_notes"].includes(f.id)).length === 0 && (
-                    <div style={{ fontSize: 12, color: COLORS.textLight, fontStyle: "italic", marginBottom: 8 }}>No custom fields yet</div>
-                  )}
-
-                  {/* Show current saved custom fields */}
-                  {(fields || []).filter(f => !["f_date","f_notes"].includes(f.id)).map(f => (
-                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, padding: "7px 10px", background: COLORS.bg, borderRadius: 8 }}>
-                      <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{f.name}</span>
-                      <span className="pill pill-blue" style={{ fontSize: 10 }}>{f.type}</span>
-                    </div>
-                  ))}
-
-                  {/* Draft new fields */}
-                  {draftFields.map((f, i) => (
-                    <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-                      <input className="form-input" placeholder="Field name" value={f.name}
-                        onChange={e => setDraftFields(prev => prev.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
-                        style={{ flex: 1 }} />
-                      <select className="form-input" style={{ width: 100, flexShrink: 0 }} value={f.type}
-                        onChange={e => setDraftFields(prev => prev.map((x, j) => j === i ? { ...x, type: e.target.value } : x))}>
+                  {draftFields.map((f,i) => (
+                    <div key={f.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
+                      <input className="form-input" style={{ flex:1 }} placeholder={`Field name`}
+                        value={f.name} onChange={e => setDraftFields(prev => prev.map((x,j)=>j===i?{...x,name:e.target.value}:x))} />
+                      <select className="form-input" style={{ width:90 }} value={f.type}
+                        onChange={e => setDraftFields(prev => prev.map((x,j)=>j===i?{...x,type:e.target.value}:x))}>
                         <option>Text</option><option>Number</option><option>Date</option><option>Yes/No</option>
                       </select>
-                      <button className="btn btn-danger btn-sm" onClick={() => setDraftFields(prev => prev.filter((_, j) => j !== i))}><Icon name="trash" size={13} /></button>
+                      <button className="btn btn-danger btn-sm" onClick={()=>setDraftFields(prev=>prev.filter((_,j)=>j!==i))}><Icon name="trash" size={13}/></button>
                     </div>
                   ))}
-
-                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                    <button className="btn btn-outline btn-sm" style={{ flex: 1 }}
-                      onClick={() => setDraftFields(prev => [...prev, { id: uid(), name: "", type: "Text" }])}>
-                      <Icon name="plus" size={13} /> New field
-                    </button>
-                    {draftFields.length > 0 && (
-                      <button className="btn btn-sm" style={{ flex: 1, background: COLORS.accent, color: "#fff" }}
-                        onClick={() => {
-                          const combined = [...(fields || defaultFields), ...draftFields.filter(f => f.name.trim())];
-                          setFields(combined);
-                          setDraftFields([]);
-                          setShowManageFields(false);
-                          showToast("Fields saved!");
-                        }}>
-                        Save fields
-                      </button>
-                    )}
-                  </div>
+                  <button className="btn btn-outline btn-sm" style={{ width:"100%", marginTop:4 }}
+                    onClick={()=>setDraftFields(prev=>[...prev,{id:uid(),name:"",type:"Text"}])}>
+                    <Icon name="plus" size={13}/> Add field
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  {activeFields.map(f => (
+                    <div key={f.id} className="form-group">
+                      <label className="form-label">{f.name}</label>
+                      {f.type === "Date" ? (
+                        <input type="date" className={`form-input${errors[f.id]?" error":""}`}
+                          value={form[f.id]||TODAY()} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                      ) : f.type === "Number" ? (
+                        <input type="number" className={`form-input${errors[f.id]?" error":""}`} placeholder="0"
+                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                      ) : f.type === "Yes/No" ? (
+                        <select className="form-input" value={form[f.id]||""}
+                          onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}}>
+                          <option value="">Select</option><option>Yes</option><option>No</option>
+                        </select>
+                      ) : (
+                        <input className={`form-input${errors[f.id]?" error":""}`} placeholder={`Enter ${f.name}`}
+                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                      )}
+                      {errors[f.id] && <div className="form-error">{errors[f.id]}</div>}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
-            </div>{/* end scrollable body */}
-
-            {/* Sticky footer with action buttons */}
-            <div style={{ padding: "12px 18px 16px", borderTop: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", gap: 10 }}>
-              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => { setShowEntryForm(false); setShowManageFields(false); setEditId(null); setForm({}); }}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => { saveEntry(); }}>{editId ? "Update Record" : "Save Record"}</button>
+            <div style={{ padding:"12px 18px 20px", borderTop:`1px solid var(--border)`, flexShrink:0, display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>{setShowEntryForm(false);setSetupMode(false);setShowManageFields(false);setEditId(null);setForm({});}}>Cancel</button>
+              {(setupMode||showManageFields) ? (
+                <button className="btn btn-primary" style={{ flex:2 }}
+                  onClick={() => {
+                    const combined = [...defaultFields, ...draftFields.filter(f=>f.name.trim())];
+                    saveCurrentFields(combined);
+                  }}>
+                  💾 Save Fields
+                </button>
+              ) : (
+                <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={saveEntry}>
+                  {editId ? "✅ Update" : "💾 Save Record"}
+                </button>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+      {/* View Record modal */}
+      {viewEntry && (
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setViewEntry(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:24, width:"100%", maxWidth:480, maxHeight:"80vh", overflow:"hidden", display:"flex", flexDirection:"column", boxShadow:"0 24px 60px rgba(0,0,0,0.3)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:"20px 20px 14px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>👤</div>
+                <div>
+                  <div style={{ fontSize:17, fontWeight:800, color:"var(--text)" }}>{viewEntry[orderedFields[0]?.id]||"Record"}</div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>Added {new Date(viewEntry.createdAt).toLocaleDateString("en-NG",{day:"numeric",month:"short",year:"numeric"})}</div>
+                </div>
+              </div>
+              <button onClick={()=>setViewEntry(null)} style={{ background:"var(--bg)", border:"none", width:32, height:32, borderRadius:"50%", cursor:"pointer", fontSize:18, color:"var(--text-muted)" }}>×</button>
+            </div>
+            <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
+              {orderedFields.map((f,i) => {
+                const val = viewEntry[f.id];
+                if(!val && val!==0) return null;
+                return (
+                  <div key={f.id} style={{ marginBottom:14, paddingBottom:14, borderBottom:i<orderedFields.length-1?`0.5px solid var(--border)`:"none" }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>{f.name}</div>
+                    <div style={{ fontSize:15, fontWeight:600, color:"var(--text)", lineHeight:1.5, wordBreak:"break-word" }}>{val}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ padding:"12px 20px 20px", borderTop:`1px solid var(--border)`, display:"flex", gap:10, flexShrink:0 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>setViewEntry(null)}>Close</button>
+              <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={()=>{openEdit(viewEntry);setViewEntry(null);}}>✏️ Edit Record</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)} />}
+
+      {/* Export — each group as a separate sheet */}
       {showExport && (
         <ExportModal
-          title="Sales Data"
+          title="Customer Records"
           onClose={() => setShowExport(false)}
           onExcelExport={() => {
-            const headers = activeFields.map(f => f.name);
-            const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
-            exportToExcel("Sales_Data_" + TODAY(), "Sales", rows, headers);
-            setShowExport(false); showToast("Excel file downloaded!");
+            try {
+              const wb = XLSX.utils.book_new();
+              // Current records sheet
+              if (entries.length > 0) {
+                const headers = activeFields.map(f => f.name);
+                const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
+                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                XLSX.utils.book_append_sheet(wb, ws, "Current Records");
+              }
+              // Archived group sheets
+              (groups||[]).forEach(grp => {
+                if (!grp.entries?.length) return;
+                const gFields = grp.fields || defaultFields;
+                const headers = gFields.map(f => f.name);
+                const rows = grp.entries.map(e => gFields.map(f => e[f.id] || ""));
+                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                const sheetName = (grp.name||"Group").slice(0,31).replace(/[\/:*?[\]]/g,"");
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+              });
+              if (wb.SheetNames.length === 0) { showToast("No data to export","error"); return; }
+              XLSX.writeFile(wb, `CustomerRecords_${TODAY()}.xlsx`);
+              setShowExport(false); showToast("Excel downloaded — each group is a separate sheet!");
+            } catch(e) { showToast("Export failed: " + e.message, "error"); }
           }}
           onPDFExport={() => {
+            // Export current group only for PDF
             const headers = activeFields.map(f => f.name);
             const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
-            exportToPDF("Sales Rep — Data Export", headers, rows, "Sales_Data");
+            exportToPDF("Customer Records — Current Group", headers, rows, "CustomerRecords");
             setShowExport(false);
           }}
         />
@@ -4979,11 +4813,14 @@ function GuideTourModal({ onClose }) {
 
 // ===================== STAFF INVITE SECTION =====================
 function StaffInviteSection({ user }) {
-  const [email, setEmail]       = useState("");
-  const [invites, setInvites]   = useState([]);
-  const [loading, setLoading]   = useState(false);
-  const [fetching, setFetching] = useState(true);
-  const [msg, setMsg]           = useState({ text: "", ok: true, isLink: false, copied: false });
+  const [email, setEmail]         = useState("");
+  const [invites, setInvites]     = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [fetching, setFetching]   = useState(true);
+  const [msg, setMsg]             = useState({ text: "", ok: true, isLink: false, copied: false });
+  const [pendingToken]            = useState(() => localStorage.getItem("rc_pending_invite"));
+  const [acceptMsg, setAcceptMsg] = useState("");
+  const [accepting, setAccepting] = useState(false);
   const token = localStorage.getItem("rc_token");
 
   // Load existing invites
@@ -5011,7 +4848,7 @@ function StaffInviteSection({ user }) {
       else {
         setInvites(prev => [data.invite, ...prev]);
         setEmail("");
-        setMsg({ text: data.inviteURL || "", ok: true, isLink: true });
+        setMsg({ text: data.inviteURL || (window.location.origin + "?invite=" + (data.invite?.token || "")), ok: true, isLink: true });
       }
     } catch(e) {
       setMsg({ text: "Network error. Try again.", ok: false });
@@ -5031,10 +4868,6 @@ function StaffInviteSection({ user }) {
       }
     } catch(e) {}
   };
-
-  const [pendingToken] = useState(() => localStorage.getItem("rc_pending_invite"));
-  const [acceptMsg, setAcceptMsg] = useState("");
-  const [accepting, setAccepting] = useState(false);
 
   const acceptPendingInvite = async () => {
     if (!pendingToken) return;
@@ -5060,7 +4893,7 @@ function StaffInviteSection({ user }) {
   };
 
   // If user has a pending invite token, show accept card
-  if (pendingToken && user.role !== "staff") {
+  if (pendingToken) {
     return (
       <div className="card" style={{ marginBottom: "0.75rem", background: COLORS.primaryLight, border: `1.5px solid ${COLORS.primary}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -5136,37 +4969,6 @@ function StaffInviteSection({ user }) {
         </div>
       )}
 
-      {/* Accept pending invite */}
-      {localStorage.getItem("rc_pending_invite") && (
-        <div style={{ background: COLORS.amberLight, border: `1px solid #FCD34D`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.amber, marginBottom: 4 }}>📩 Pending Staff Invite</div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 10 }}>You have a pending invite to join a business.</div>
-          <button className="btn btn-primary" style={{ marginBottom: 8 }} onClick={async () => {
-            const pending = localStorage.getItem("rc_pending_invite");
-            const jwt = localStorage.getItem("rc_token");
-            try {
-              const res = await fetch(`${API_URL}/api/invite/accept`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
-                body: JSON.stringify({ token: pending }),
-              });
-              const data = await res.json();
-              if (res.ok) {
-                localStorage.removeItem("rc_pending_invite");
-                setMsg({ text: "✅ Access granted! Reloading…", ok: true, isLink: false });
-                setTimeout(() => window.location.reload(), 2000);
-              } else {
-                setMsg({ text: data.error || "Failed to accept invite.", ok: false, isLink: false });
-              }
-            } catch(e) { setMsg({ text: "Network error. Try again.", ok: false, isLink: false }); }
-          }}>✅ Accept Invite</button>
-          <button onClick={() => { localStorage.removeItem("rc_pending_invite"); window.location.reload(); }}
-            style={{ background:"none", border:"none", color:COLORS.danger, fontSize:12, cursor:"pointer", fontFamily:"'Inter',sans-serif", display:"block" }}>
-            Decline
-          </button>
-        </div>
-      )}
-
       {/* Invite input */}
       <div style={{ display: "flex", gap: 8 }}>
         <input
@@ -5219,7 +5021,7 @@ function StaffInviteSection({ user }) {
       )}
 
       <div style={{ marginTop: 12, padding: "10px 12px", background: COLORS.primaryLight, borderRadius: 10, fontSize: 12, color: COLORS.primary, lineHeight: 1.6 }}>
-        💡 Invited staff will receive an email, sign up with their own account, and immediately see your business records. You can remove their access anytime.
+        💡 Invited staff will have access to your <strong>Shop Sales</strong> and <strong>Inventory</strong> only. Farm, Customer Records and Debt sections remain private to each user. You can remove access anytime.
       </div>
     </div>
   );
@@ -6188,6 +5990,9 @@ function App() {
 
     // Re-render on sync update
     const handleSyncUpdate = () => {
+      // Increment tick to force ALL components to re-read from localStorage
+      setSyncTick(t => t + 1);
+      // Also refresh user object from session cache
       const session = localStorage.getItem("rc_session");
       if (session) {
         try {
@@ -6417,6 +6222,8 @@ function App() {
   }, []);
 
   const [showPinSetup, setShowPinSetup] = useState(false);
+  const [syncTick, setSyncTick] = useState(0); // increments on every successful pull
+  const [pinSetupMode, setPinSetupMode] = useState("prompt"); // "prompt" | "enter"
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [pinP1, setPinP1] = useState("");
   const [pinP2, setPinP2] = useState("");
@@ -6434,10 +6241,9 @@ function App() {
     setScreen("app");
     setNavTab("home");
     if (!showOnboarding) { setShowOnboarding(false); }
-    // Prompt PIN setup for new signups (if no PIN already set)
-    if (isNewSignup && !localStorage.getItem("sl_pin")) {
-      setTimeout(() => setShowPinSetup(true), 800);
-    }
+    // PIN setup is triggered after onboarding completes (see OnboardingScreen onDone)
+    // We still set the flag so the onboarding knows to show it
+    if (isNewSignup) localStorage.setItem("rc_new_signup", "1");
     // Weekly backup nudge
     const _lbk = `rc_last_backup_${fullUser.uid}`;
     const _lb  = localStorage.getItem(_lbk);
@@ -6536,41 +6342,74 @@ function App() {
 
   if (showPinSetup) return (
     <><style>{css}</style>
-    <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,#1E3A8A,#2563EB)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-      <div style={{ background:"#fff", borderRadius:24, padding:28, width:"100%", maxWidth:360, textAlign:"center", boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
-        <div style={{ fontSize:44, marginBottom:10 }}>🔒</div>
-        <div style={{ fontSize:20, fontWeight:800, color:COLORS.text, marginBottom:4 }}>Create your PIN</div>
-        <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:20, lineHeight:1.6 }}>
-          Set a 4-digit PIN to protect your business records. You can change it anytime from Profile.
-        </div>
-        <div className="form-group" style={{ textAlign:"left" }}>
-          <label className="form-label">Enter 4-digit PIN</label>
-          <input type="password" inputMode="numeric" maxLength={4} className="form-input"
-            value={pinP1} onChange={e => { setPinP1(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
-            placeholder="••••"
-            style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }} autoFocus />
-        </div>
-        <div className="form-group" style={{ textAlign:"left" }}>
-          <label className="form-label">Confirm PIN</label>
-          <input type="password" inputMode="numeric" maxLength={4} className="form-input"
-            value={pinP2} onChange={e => { setPinP2(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
-            placeholder="••••"
-            style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }} />
-        </div>
-        {pinErr && <div style={{ color:COLORS.danger, fontSize:13, marginBottom:10 }}>{pinErr}</div>}
-        <button className="btn btn-primary" style={{ marginBottom:10 }} onClick={() => {
-          if (pinP1.length !== 4) { setPinErr("PIN must be exactly 4 digits"); return; }
-          if (pinP1 !== pinP2) { setPinErr("PINs do not match. Try again."); return; }
-          localStorage.setItem("sl_pin", pinP1);
-          setShowPinSetup(false);
-          setPinP1(""); setPinP2(""); setPinErr("");
-        }}>
-          ✅ Save PIN &amp; Continue
-        </button>
-        <button onClick={() => { setShowPinSetup(false); setPinP1(""); setPinP2(""); }}
-          style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:8 }}>
-          Skip for now
-        </button>
+    <div style={{
+      minHeight:"100vh",
+      background:"linear-gradient(135deg,#1E3A8A 0%,#1D4ED8 55%,#0F766E 100%)",
+      display:"flex", alignItems:"center", justifyContent:"center", padding:20,
+    }}>
+      <div style={{
+        background:"#fff", borderRadius:24, padding:"32px 28px",
+        width:"100%", maxWidth:360, textAlign:"center",
+        boxShadow:"0 24px 60px rgba(0,0,0,0.25)",
+      }}>
+        {pinSetupMode === "prompt" ? (
+          <>
+            <div style={{ fontSize:52, marginBottom:12 }}>🔒</div>
+            <div style={{ fontSize:22, fontWeight:800, color:COLORS.text, marginBottom:8 }}>Set a PIN lock?</div>
+            <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:28, lineHeight:1.7 }}>
+              Protect your business records with a 4-digit PIN. You can always set or change this later in Profile.
+            </div>
+            <button className="btn btn-primary" style={{ marginBottom:12, fontSize:15, fontWeight:700 }}
+              onClick={() => { setPinSetupMode("enter"); setPinP1(""); setPinP2(""); setPinErr(""); }}>
+              🔐 Set PIN Now
+            </button>
+            <button
+              onClick={() => { setShowPinSetup(false); setPinSetupMode("prompt"); localStorage.removeItem("rc_new_signup"); }}
+              style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:8 }}>
+              Skip for now
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize:40, marginBottom:10 }}>🔐</div>
+            <div style={{ fontSize:20, fontWeight:800, color:COLORS.text, marginBottom:6 }}>Create your PIN</div>
+            <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:20, lineHeight:1.6 }}>
+              Enter a 4-digit PIN to secure your account.
+            </div>
+            <div className="form-group" style={{ textAlign:"left" }}>
+              <label className="form-label">New PIN (4 digits)</label>
+              <input type="password" inputMode="numeric" maxLength={4} className="form-input"
+                value={pinP1}
+                onChange={e => { setPinP1(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
+                placeholder="••••"
+                style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }}
+                autoFocus />
+            </div>
+            <div className="form-group" style={{ textAlign:"left" }}>
+              <label className="form-label">Confirm PIN</label>
+              <input type="password" inputMode="numeric" maxLength={4} className="form-input"
+                value={pinP2}
+                onChange={e => { setPinP2(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
+                placeholder="••••"
+                style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }} />
+            </div>
+            {pinErr && <div style={{ color:COLORS.danger, fontSize:13, marginBottom:10 }}>{pinErr}</div>}
+            <button className="btn btn-primary" style={{ marginBottom:12 }} onClick={() => {
+              if (pinP1.length !== 4) { setPinErr("PIN must be exactly 4 digits"); return; }
+              if (pinP1 !== pinP2) { setPinErr("PINs do not match. Try again."); return; }
+              localStorage.setItem("sl_pin", pinP1);
+              setShowPinSetup(false); setPinSetupMode("prompt");
+              setPinP1(""); setPinP2(""); setPinErr("");
+              localStorage.removeItem("rc_new_signup");
+            }}>
+              ✅ Save PIN &amp; Continue
+            </button>
+            <button onClick={() => setPinSetupMode("prompt")}
+              style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:8 }}>
+              ← Back
+            </button>
+          </>
+        )}
       </div>
     </div>
     </>;
@@ -6633,7 +6472,13 @@ function App() {
   if (!showOnboarding && user) return (
     <>
       <style>{css}</style>
-      <OnboardingScreen user={user} onDone={() => setShowOnboarding(true)} />
+      <OnboardingScreen user={user} onDone={() => {
+        setShowOnboarding(true);
+        // Show PIN setup after onboarding completes (new signup only)
+        if (!localStorage.getItem("sl_pin")) {
+          setTimeout(() => setShowPinSetup(true), 400);
+        }
+      }} />
     </>
   );
 
@@ -6950,12 +6795,12 @@ function App() {
             </div>
           )}
           <div className="main">
-            {navTab === "home" && <HomeScreen user={user} sector={sector} onSetSector={(s) => { setSector(s); setNavTab("sector"); }} onManageSectors={handleManageSectors} onViewOverview={() => setNavTab("history")} onViewDebt={() => setNavTab("debtcredit")} />}
+            {navTab === "home" && <HomeScreen key={syncTick} user={user} sector={sector} onSetSector={(s) => { setSector(s); setNavTab("sector"); }} onManageSectors={handleManageSectors} onViewOverview={() => setNavTab("history")} onViewDebt={() => setNavTab("debtcredit")} />}
             {navTab === "sector" && sector === "sales" && <SalesRepScreen user={user} />}
             {navTab === "sector" && sector === "shop" && <ShopScreen user={user} />}
             {navTab === "sector" && sector === "farm" && <FarmScreen user={user} />}
             {navTab === "history" && <HistoryScreen user={user} />}
-            {navTab === "debtcredit" && <DebtCreditScreen user={user} />}
+            {navTab === "debtcredit" && <DebtCreditScreen key={`debt-${syncTick}`} user={user} />}
             {navTab === "notifications" && <NotificationsScreen user={user} onNavigateShop={() => { setSector("shop"); setNavTab("sector"); localStorage.setItem("rc_open_inventory", "1"); }} />}
             {navTab === "profile" && <ProfileScreen user={user} onLogout={handleLogout} onManageSectors={handleManageSectors} />}
             {navTab === "manageSectors" && <ManageSectorsScreen user={user} onSave={handleSaveSectors} onBack={() => setNavTab("home")} />}
