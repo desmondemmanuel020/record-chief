@@ -1,5 +1,9 @@
 {
   "version": 2,
+  "buildCommand": "",
+  "installCommand": "",
+  "outputDirectory": ".",
+  "framework": null,
   "headers": [
     {
       "source": "/sw.js",
