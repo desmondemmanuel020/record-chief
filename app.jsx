@@ -1,11 +1,23 @@
 const { useState, useEffect, useCallback, useRef } = React;
 
-const NAIRA = (n) => `₦${Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+const CURRENCIES = { NGN:"₦", USD:"$", GBP:"£", EUR:"€", GHS:"₵", KES:"KSh", ZAR:"R" };
+const getCurrency = () => localStorage.getItem("sl_currency") || "NGN";
+const getCurrencySymbol = () => CURRENCIES[getCurrency()] || "₦";
+// Polyfill Promise.allSettled for Android 6 Chrome
+if (typeof Promise.allSettled !== 'function') {
+  Promise.allSettled = (promises) =>
+    Promise.all(promises.map(p => Promise.resolve(p).then(
+      value => ({ status: 'fulfilled', value }),
+      reason => ({ status: 'rejected', reason })
+    )));
+}
+
+const NAIRA = (n) => `${getCurrencySymbol()}${Number(n || 0).toLocaleString("en-NG", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 const TODAY = () => new Date().toISOString().split("T")[0];
 const TS = () => new Date().toISOString();
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// Dynamic colors — these are the CSS var equivalents for JSX inline styles
+// Dynamic colors   these are the CSS var equivalents for JSX inline styles
 // Used alongside static COLORS for gradient/special colours
 const DC = {
   bg: "var(--bg)",
@@ -59,23 +71,28 @@ const css = `
   [data-theme="dark"] {
     --bg: #0A0F1E;
     --surface: #161D31;
+    --surface2: #1E2640;
     --text: #F1F5F9;
     --text-muted: #94A3B8;
     --text-light: #4B5563;
-    --border: rgba(255,255,255,0.08);
-    --primary: #00C48C;
-    --primary-dark: #00A376;
-    --primary-light: #0A2419;
-    --accent: #00C48C;
-    --accent-light: #0A2419;
+    --border: rgba(255,255,255,0.09);
+    --primary: #3B82F6;
+    --primary-dark: #2563EB;
+    --primary-light: #1E3A5F;
+    --accent: #10B981;
+    --accent-light: #0A2E20;
     --danger: #F87171;
     --danger-light: #2D1515;
     --amber: #FBBF24;
     --amber-light: #2D2209;
     --purple: #A78BFA;
     --purple-light: #1E1535;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.4);
   }
-  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); transition: background 0.2s, color 0.2s; }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); transition: background 0.2s, color 0.2s; -webkit-text-size-adjust: 100%; }
+  /* Android 6 touch feedback */
+  * { -webkit-tap-highlight-color: transparent; }
+  input, textarea, select { -webkit-appearance: none; }
   input, select, textarea { font-family: 'Inter', sans-serif; }
   button { cursor: pointer; font-family: 'Inter', sans-serif; }
 
@@ -117,70 +134,82 @@ const css = `
 
   .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .topbar { background: var(--surface); color: var(--text); padding: 0 1.25rem; display: flex; align-items: center; justify-content: space-between; height: 52px; border-bottom: 0.5px solid var(--border); position: sticky; top: 0; z-index: 40; }
+  [data-theme="dark"] .topbar { background: #0E1525; border-bottom-color: rgba(255,255,255,0.07); }
   .topbar-breadcrumb { font-size: 14px; font-weight: 600; color: var(--text); }
   .topbar-right { display: flex; gap: 8px; align-items: center; }
   .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--primary); cursor: pointer; }
 
   .main { flex: 1; padding: 1.25rem; overflow-y: auto; background: var(--bg); }
+  [data-theme="dark"] .main { background: #0A0F1E; }
 
-  .card { background: var(--surface); border-radius: 16px; border: 1px solid var(--border); padding: 1rem 1.1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(15,23,42,0.04); }
+  .card { background: var(--surface); border-radius: 16px; border: 1px solid var(--border); padding: 1rem 1.1rem; margin-bottom: 0.75rem; box-shadow: var(--card-shadow, 0 1px 3px rgba(15,23,42,0.04)); }
+  [data-theme="dark"] .card { border-color: rgba(255,255,255,0.07); }
+  [data-theme="dark"] .card-sm { border-color: rgba(255,255,255,0.06); }
   .card-sm { background: var(--surface); border-radius: 10px; border: 0.5px solid var(--border); padding: 0.75rem 0.9rem; margin-bottom: 0.6rem; }
 
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 1rem; }
   .stat-card { background: var(--surface); border-radius: 12px; border: 0.5px solid var(--border); padding: 0.85rem 1rem; }
-  .stat-label { font-size: 11px; color: ${COLORS.textMuted}; margin-bottom: 4px; }
-  .stat-value { font-size: 20px; font-weight: 600; font-family: 'Space Mono', monospace; color: ${COLORS.text}; }
-  .stat-sub { font-size: 10px; color: ${COLORS.textLight}; margin-top: 2px; }
+  .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+  .stat-value { font-size: 20px; font-weight: 600; font-family: 'Space Mono', monospace; color: var(--text); }
+  .stat-sub { font-size: 10px; color: var(--text-light); margin-top: 2px; }
 
-  .section-title { font-size: 13px; font-weight: 600; color: ${COLORS.textMuted}; text-transform: uppercase; letter-spacing: 0.08em; margin: 1.25rem 0 0.6rem; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 1.25rem 0 0.6rem; }
 
   .form-group { margin-bottom: 0.85rem; }
-  .form-label { font-size: 12px; font-weight: 500; color: ${COLORS.textMuted}; margin-bottom: 4px; display: block; }
+  .form-label { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 4px; display: block; }
   .form-input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 14px; color: var(--text); outline: none; font-family: 'Inter', sans-serif; transition: border-color 0.2s; }
+  [data-theme="dark"] .form-input { background: #0F1629; border-color: rgba(255,255,255,0.12); color: #F1F5F9; }
+  [data-theme="dark"] .form-input:focus { border-color: var(--primary); background: #161D31; }
+  [data-theme="dark"] .form-input::placeholder { color: rgba(255,255,255,0.25); }
   @media (max-width: 640px) { .form-input, .search-bar, input, select, textarea { font-size: 16px !important; } }
   .form-input:focus { border-color: var(--primary); background: var(--surface); }
   .form-input.error { border-color: var(--danger); }
-  .form-error { font-size: 11px; color: ${COLORS.danger}; margin-top: 3px; }
+  .form-error { font-size: 11px; color: var(--danger); margin-top: 3px; }
 
   .btn { border: none; border-radius: 9px; padding: 11px 20px; font-size: 14px; font-weight: 600; font-family: 'Inter', sans-serif; transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; justify-content: center; }
-  .btn-primary { background: linear-gradient(135deg, ${COLORS.primary}, ${COLORS.primaryDark}); color: #fff; width: 100%; box-shadow: 0 2px 8px rgba(37,99,235,0.3); }
-  .btn-primary:hover { background: linear-gradient(135deg, ${COLORS.primaryDark}, #1E3A8A); box-shadow: 0 4px 12px rgba(37,99,235,0.4); }
+  .btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-dark, #1D4ED8)); color: #fff; width: 100%; box-shadow: 0 2px 8px rgba(37,99,235,0.2); }
+  .btn-primary:hover { background: linear-gradient(135deg, var(--primary), #1E3A8A); box-shadow: 0 4px 12px rgba(37,99,235,0.3); }
   .btn-primary:active { transform: scale(0.98); }
-  .btn-outline { background: transparent; border: 1px solid ${COLORS.border}; color: ${COLORS.text}; }
-  .btn-outline:hover { background: ${COLORS.bg}; }
-  .btn-danger { background: ${COLORS.dangerLight}; color: ${COLORS.danger}; border: none; }
-  .btn-success { background: ${COLORS.accentLight}; color: ${COLORS.accent}; border: none; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-outline:hover { background: var(--bg); }
+  .btn-danger { background: var(--danger-light); color: var(--danger); border: none; }
+  .btn-success { background: var(--accent-light); color: var(--accent); border: none; }
   .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 7px; }
 
   .pill { display: inline-flex; align-items: center; border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 500; }
-  .pill-green { background: ${COLORS.accentLight}; color: ${COLORS.accent}; }
-  .pill-amber { background: ${COLORS.amberLight}; color: ${COLORS.amber}; }
-  .pill-red { background: ${COLORS.dangerLight}; color: ${COLORS.danger}; }
-  .pill-blue { background: ${COLORS.primaryLight}; color: ${COLORS.primary}; }
+  .pill-green { background: var(--accent-light); color: var(--accent); }
+  .pill-amber { background: var(--amber-light); color: var(--amber); }
+  .pill-red { background: var(--danger-light); color: var(--danger); }
+  .pill-blue { background: var(--primary-light); color: var(--primary); }
 
-  .entry-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 0.5px solid ${COLORS.border}; }
+  .entry-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 0.5px solid var(--border); }
   .entry-row:last-child { border-bottom: none; }
   .entry-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
   .entry-content { flex: 1; min-width: 0; }
   .entry-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .entry-sub { font-size: 12px; color: ${COLORS.textMuted}; margin-top: 2px; }
-  .entry-amount { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: ${COLORS.text}; flex-shrink: 0; }
+  .entry-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .entry-amount { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: var(--text); flex-shrink: 0; }
 
   .search-bar { width: 100%; padding: 10px 36px 10px 38px; border-radius: 12px; border: 1.5px solid var(--border); background: var(--surface); font-size: 13px; font-family: 'Inter', sans-serif; outline: none; transition: border-color 0.2s, box-shadow 0.2s; color: var(--text); }
+  [data-theme="dark"] .search-bar { background: #0F1629; border-color: rgba(255,255,255,0.1); color: #F1F5F9; }
+  [data-theme="dark"] .search-bar::placeholder { color: rgba(255,255,255,0.25); }
+  [data-theme="dark"] .search-bar:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
   .search-bar:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
   .search-wrap { position: relative; margin-bottom: 0.75rem; }
-  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: ${COLORS.textLight}; }
+  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-light); }
 
   .tab-bar { display: flex; background: var(--bg); border-radius: 10px; padding: 3px; margin-bottom: 1rem; }
+  [data-theme="dark"] .tab-bar { background: #0F1629; }
+  [data-theme="dark"] .tab-btn.active { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
   .tab-btn { flex: 1; border: none; background: none; padding: 7px; font-size: 12px; font-weight: 500; border-radius: 8px; color: var(--text-muted); font-family: 'Inter', sans-serif; transition: all 0.15s; }
   .tab-btn.active { background: var(--surface); color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
-  .sector-card { background: ${COLORS.surface}; border-radius: 16px; border: 2px solid transparent; padding: 1.25rem; margin-bottom: 0.75rem; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 14px; }
-  .sector-card:hover { border-color: ${COLORS.primary}; }
-  .sector-card.active { border-color: ${COLORS.primary}; background: ${COLORS.primaryLight}; }
+  .sector-card { background: var(--surface); border-radius: 16px; border: 2px solid transparent; padding: 1.25rem; margin-bottom: 0.75rem; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 14px; }
+  .sector-card:hover { border-color: var(--primary); }
+  .sector-card.active { border-color: var(--primary); background: var(--primary-light); }
   .sector-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
   .sector-info h3 { font-size: 15px; font-weight: 600; }
-  .sector-info p { font-size: 12px; color: ${COLORS.textMuted}; margin-top: 3px; }
+  .sector-info p { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
 
   .welcome-screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; background: linear-gradient(145deg, #1E3A8A 0%, #1D4ED8 40%, #2563EB 70%, #0F766E 100%); color: #fff; }
   .welcome-logo { font-family: 'Space Mono', monospace; font-size: 32px; font-weight: 700; margin-bottom: 8px; }
@@ -188,32 +217,32 @@ const css = `
   .welcome-art { font-size: 72px; margin-bottom: 2rem; }
 
   .auth-card { background: #fff; border-radius: 20px; padding: 1.75rem; width: 100%; max-width: 360px; }
-  .auth-title { font-size: 20px; font-weight: 700; color: ${COLORS.text}; margin-bottom: 4px; }
-  .auth-sub { font-size: 13px; color: ${COLORS.textMuted}; margin-bottom: 1.5rem; }
+  .auth-title { font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .auth-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 1.5rem; }
 
-  .toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: ${COLORS.text}; color: #fff; padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 500; z-index: 999; animation: toastIn 0.3s ease; white-space: nowrap; }
-  .toast.success { background: ${COLORS.accent}; }
-  .toast.error { background: ${COLORS.danger}; }
+  .toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 500; z-index: 999; animation: toastIn 0.3s ease; white-space: nowrap; }
+  .toast.success { background: var(--accent); color: #fff; }
+  .toast.error { background: var(--danger); color: #fff; }
   @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   @keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-  .empty-state { text-align: center; padding: 3rem 1rem; color: ${COLORS.textMuted}; }
+  .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-muted); }
   .empty-icon { font-size: 48px; margin-bottom: 1rem; }
-  .empty-state h3 { font-size: 16px; font-weight: 600; color: ${COLORS.text}; margin-bottom: 6px; }
+  .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
   .empty-state p { font-size: 13px; }
 
-  .stock-bar { height: 4px; border-radius: 2px; background: ${COLORS.bg}; margin-top: 4px; }
+  .stock-bar { height: 4px; border-radius: 2px; background: var(--bg); margin-top: 4px; }
   .stock-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
 
   .divider { height: 0.5px; background: var(--border); margin: 0.75rem 0; }
 
-  .profile-avatar-lg { width: 80px; height: 80px; border-radius: 50%; background: ${COLORS.primaryLight}; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; color: ${COLORS.primary}; margin: 0 auto 0; overflow: hidden; position: relative; cursor: pointer; }
+  .profile-avatar-lg { width: 80px; height: 80px; border-radius: 50%; background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; color: var(--primary); margin: 0 auto 0; overflow: hidden; position: relative; cursor: pointer; }
   .profile-avatar-lg img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
   .avatar-edit-overlay { position: absolute; inset: 0; border-radius: 50%; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.15s; cursor: pointer; }
   .profile-avatar-lg:hover .avatar-edit-overlay { opacity: 1; }
 
-  .chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 500; background: ${COLORS.bg}; color: ${COLORS.textMuted}; border: 0.5px solid ${COLORS.border}; cursor: pointer; transition: all 0.15s; }
-  .chip.active { background: ${COLORS.primaryLight}; color: ${COLORS.primary}; border-color: ${COLORS.primary}; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 500; background: var(--bg); color: var(--text-muted); border: 0.5px solid var(--border); cursor: pointer; transition: all 0.15s; }
+  .chip.active { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
 
   .export-row { display: flex; gap: 8px; margin-top: 0.75rem; }
   select.form-input { appearance: none; }
@@ -260,6 +289,7 @@ const css = `
 
   /* ── Safe area insets for notched phones ── */
   .bottom-tab-bar { padding-bottom: env(safe-area-inset-bottom, 0px); height: calc(54px + env(safe-area-inset-bottom, 0px)); background: #0F172A; }
+  [data-theme="dark"] .bottom-tab-bar { background: #080D1A; border-top-color: rgba(255,255,255,0.06); }
   .main { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
 
   /* ── Prevent text size inflation on rotation ── */
@@ -334,10 +364,35 @@ function useLocalState(key, init) {
   const [val, setVal] = useState(() => {
     try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : (typeof init === "function" ? init() : init); } catch { return typeof init === "function" ? init() : init; }
   });
+
+  // Re-hydrate from localStorage whenever sync pulls new data
+  useEffect(() => {
+    const handler = () => {
+      try {
+        const s = localStorage.getItem(key);
+        if (s !== null) setVal(JSON.parse(s));
+      } catch {}
+    };
+    window.addEventListener("rc_sync_update", handler);
+    return () => window.removeEventListener("rc_sync_update", handler);
+  }, [key]);
+
   const update = useCallback((v) => {
     setVal(prev => {
       const next = typeof v === "function" ? v(prev) : v;
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+        IDB.set(key, next).catch(() => {});
+        // Trigger immediate push after data write (debounced via shared timer)
+        if (typeof window !== "undefined") {
+          clearTimeout(window.__rcSyncTimer);
+          window.__rcSyncTimer = setTimeout(() => {
+            const _tok = localStorage.getItem("rc_token");
+            const _uid = (() => { try { return JSON.parse(localStorage.getItem("rc_session")||"{}").uid; } catch { return null; } })();
+            if (_tok && _uid && navigator.onLine) AuthAPI.syncToServer(_uid).catch(() => {});
+          }, 800);
+        }
+      } catch {}
       return next;
     });
   }, [key]);
@@ -638,41 +693,184 @@ function MiniBarChart({ data, color, label }) {
 }
 
 // ===================== AUTH =====================
+
+
+//                                                        
+// IndexedDB wrapper   faster, larger capacity than localStorage
+// Falls back to localStorage silently if IDB not available
+//                                                        
+const IDB = (() => {
+  const DB_NAME = "RecordChief";
+  const DB_VER  = 1;
+  const STORE   = "data";
+  let _db = null;
+
+  const open = () => new Promise((res, rej) => {
+    if (_db) return res(_db);
+    if (!window.indexedDB && !window.mozIndexedDB && !window.webkitIndexedDB) {
+        return rej(new Error("IDB not available"));
+      }
+      const idb = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB;
+    const req = (window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB).open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onsuccess = e => { _db = e.target.result; res(_db); };
+    req.onerror   = e => rej(e.target.error);
+  });
+
+  return {
+    async get(key) {
+      try {
+        const db = await open();
+        return new Promise((res, rej) => {
+          const tx  = db.transaction(STORE, "readonly");
+          const req = tx.objectStore(STORE).get(key);
+          req.onsuccess = () => res(req.result);
+          req.onerror   = () => rej(req.error);
+        });
+      } catch(e) {
+        // fallback to localStorage
+        try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : undefined; } catch { return undefined; }
+      }
+    },
+    async set(key, value) {
+      try {
+        const db = await open();
+        return new Promise((res, rej) => {
+          const tx  = db.transaction(STORE, "readwrite");
+          const req = tx.objectStore(STORE).put(value, key);
+          req.onsuccess = () => res();
+          req.onerror   = () => rej(req.error);
+        });
+      } catch(e) {
+        // fallback to localStorage
+        try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+      }
+    },
+    async del(key) {
+      try {
+        const db = await open();
+        return new Promise((res, rej) => {
+          const tx  = db.transaction(STORE, "readwrite");
+          const req = tx.objectStore(STORE).delete(key);
+          req.onsuccess = () => res();
+          req.onerror   = () => rej(req.error);
+        });
+      } catch(e) {
+        localStorage.removeItem(key);
+      }
+    },
+  };
+})();
+
+//    Sync conflict log                                  
+// Tracks when local data was kept over server data
+const SyncLog = {
+  KEY: "rc_sync_log",
+  MAX: 50,
+  add(entry) {
+    try {
+      const log = this.get();
+      log.unshift({ ...entry, ts: new Date().toISOString() });
+      localStorage.setItem(this.KEY, JSON.stringify(log.slice(0, this.MAX)));
+    } catch(e) {}
+  },
+  get() {
+    try { return JSON.parse(localStorage.getItem(this.KEY)) || []; } catch { return []; }
+  },
+  clear() { localStorage.removeItem(this.KEY); },
+};
+
+//    Demo Mode sample data                              
+const DEMO_USER = {
+  uid: "demo_user", name: "Amaka (Demo)", email: "demo@recordchief.app",
+  phone: "08012345678", location: "Lagos Island", sectors: ["shop","farm","sales"],
+  role: "owner", emailVerified: true,
+};
+const DEMO_INVENTORY = [
+  { id:"d1", name:"Indomie Noodles (ctn)", price:4500, stock:24, createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d2", name:"Sunflower Oil 1L",      price:2800, stock:3,  createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d3", name:"Peak Milk (tin)",        price:1800, stock:0,  createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d4", name:"Golden Morn 1kg",        price:1500, stock:15, createdAt:"2026-03-01T08:00:00Z" },
+  { id:"d5", name:"Semovita 2kg",           price:3200, stock:8,  createdAt:"2026-03-01T08:00:00Z" },
+];
+const DEMO_SALES = [
+  { id:"s1", itemId:"d1", itemName:"Indomie Noodles (ctn)", qty:2, price:4500, total:9000,  date:new Date().toISOString().split("T")[0], createdAt:new Date().toISOString() },
+  { id:"s2", itemId:"d4", itemName:"Golden Morn 1kg",       qty:3, price:1500, total:4500,  date:new Date().toISOString().split("T")[0], createdAt:new Date().toISOString() },
+  { id:"s3", itemId:"d5", itemName:"Semovita 2kg",          qty:1, price:3200, total:3200,  date:new Date(Date.now()-86400000).toISOString().split("T")[0], createdAt:new Date(Date.now()-86400000).toISOString() },
+];
+const DEMO_FARM = [
+  { id:"f1", desc:"Fertilizer purchase",  amount:15000, cat:"Inputs",    date:"2026-03-05", createdAt:"2026-03-05T09:00:00Z" },
+  { id:"f2", desc:"Labour — planting",    amount:8000,  cat:"Labour",    date:"2026-03-08", createdAt:"2026-03-08T09:00:00Z" },
+  { id:"f3", desc:"Irrigation pump fuel", amount:5500,  cat:"Equipment", date:"2026-03-12", createdAt:"2026-03-12T09:00:00Z" },
+];
+const DEMO_DEBT = [
+  { id:"dbt1", type:"credit", name:"Chinedu Obi",  amount:12000, paid:5000,  dueDate:"2026-04-10", settled:false, note:"Goods bought on credit", createdAt:"2026-03-01T09:00:00Z" },
+  { id:"dbt2", type:"debt",   name:"Emeka Supplies",amount:8500, paid:8500,  dueDate:"2026-03-15", settled:true,  note:"Delivery fee owed",      createdAt:"2026-02-20T09:00:00Z" },
+  { id:"dbt3", type:"credit", name:"Ngozi Fashion", amount:6000, paid:0,     dueDate:new Date(Date.now()-86400000*2).toISOString().split("T")[0], settled:false, note:"3 wrappers sold on credit", createdAt:"2026-03-10T09:00:00Z" },
+];
+const DEMO_SALES_ENTRIES = [
+  { id:"se1", f_date:"2026-03-18", f_name:"Taiwo Bakery", f_phone:"08056781234", f_product:"Flour (50kg bag)", f_amount:"22000", f_notes:"Regular customer, weekly order", createdAt:"2026-03-18T10:00:00Z" },
+  { id:"se2", f_date:"2026-03-20", f_name:"Bello Farms",  f_phone:"07041235678", f_product:"Semovita x10",     f_amount:"32000", f_notes:"Bulk discount applied",          createdAt:"2026-03-20T10:00:00Z" },
+];
+
+function loadDemoData() {
+  const uid = DEMO_USER.uid;
+  localStorage.setItem(`sl_inv_${uid}`,          JSON.stringify(DEMO_INVENTORY));
+  localStorage.setItem(`sl_shopsales_${uid}`,    JSON.stringify(DEMO_SALES));
+  localStorage.setItem(`sl_farm_${uid}`,         JSON.stringify(DEMO_FARM));
+  localStorage.setItem(`sl_debt_${uid}`,         JSON.stringify(DEMO_DEBT));
+  localStorage.setItem(`sl_sales_${uid}`,        JSON.stringify(DEMO_SALES_ENTRIES));
+  localStorage.setItem(`sl_sales_fields_${uid}`, JSON.stringify(null));
+  localStorage.setItem("rc_demo_mode",           "1");
+}
+function clearDemoData() {
+  const uid = DEMO_USER.uid;
+  ["sl_inv_","sl_shopsales_","sl_farm_","sl_debt_","sl_sales_","sl_sales_fields_"].forEach(k => localStorage.removeItem(k+uid));
+  localStorage.removeItem("rc_demo_mode");
+}
+
 function WelcomeScreen({ onNavigate }) {
   return (
     <div className="welcome-screen" style={{ justifyContent: "center", padding: "2rem 1.5rem" }}>
       {/* Logo + branding */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 32 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28 }}>
         <div style={{ width: 88, height: 88, borderRadius: 26, background: "rgba(255,255,255,0.15)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 46, marginBottom: 20, boxShadow: "0 8px 32px rgba(0,0,0,0.2)" }}>📒</div>
         <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 28, fontWeight: 700, letterSpacing: "-0.5px", marginBottom: 8 }}>Record Chief</div>
         <div style={{ fontSize: 14, opacity: 0.75, textAlign: "center", maxWidth: 260, lineHeight: 1.7 }}>
           Track sales, inventory, farm expenses & more — built for Nigerian businesses.
         </div>
-        {/* Feature pills */}
-        <div style={{ display: "flex", gap: 8, marginTop: 20, flexWrap: "wrap", justifyContent: "center" }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 18, flexWrap: "wrap", justifyContent: "center" }}>
           {["🏪 Shop Sales", "🌾 Farm Records", "🤝 Debt Tracker", "💼 Sales Rep"].map(f => (
             <span key={f} style={{ background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 20, padding: "5px 12px", fontSize: 11, fontWeight: 600 }}>{f}</span>
           ))}
         </div>
       </div>
 
-      {/* Action card — centred, not snapped to bottom */}
-      <div style={{
-        background: "#fff", borderRadius: 24, padding: "28px 24px 28px",
-        width: "100%", maxWidth: 380,
-        boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
-      }}>
+      <div style={{ background: "#fff", borderRadius: 24, padding: "28px 24px", width: "100%", maxWidth: 380, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ fontSize: 19, fontWeight: 800, color: COLORS.text, marginBottom: 4 }}>Get Started</div>
-        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 22 }}>Join thousands of Nigerian business owners</div>
-        <button className="btn btn-primary" style={{ marginBottom: 12, fontSize: 15, padding: "13px" }} onClick={() => onNavigate("signup")}>
-          Create Free Account
+        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 20 }}>Join thousands of Nigerian business owners</div>
+
+        <button className="btn btn-primary" style={{ marginBottom: 10, fontSize: 15, padding: "13px" }} onClick={() => onNavigate("signup")}>
+          🚀 Create Free Account
         </button>
         <button onClick={() => onNavigate("login")} style={{
           width: "100%", padding: "13px", border: `1.5px solid ${COLORS.border}`, borderRadius: 9,
           background: "transparent", color: COLORS.text, fontWeight: 600, fontSize: 15,
-          cursor: "pointer", fontFamily: "'Inter', sans-serif",
+          cursor: "pointer", fontFamily: "'Inter', sans-serif", marginBottom: 10,
         }}>Log In</button>
-        <div style={{ textAlign: "center", marginTop: 16, fontSize: 11, color: COLORS.textLight }}>
+
+        {/* Demo Mode button */}
+        <button onClick={() => onNavigate("demo")} style={{
+          width: "100%", padding: "11px", border: "none", borderRadius: 9,
+          background: "linear-gradient(135deg, #7C3AED, #5B21B6)",
+          color: "#fff", fontWeight: 700, fontSize: 14,
+          cursor: "pointer", fontFamily: "'Inter', sans-serif",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}>
+          <span>🎮</span> Try Demo — No Account Needed
+        </button>
+
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 11, color: COLORS.textLight }}>
           Free forever · No credit card required
         </div>
       </div>
@@ -686,23 +884,23 @@ const ALL_SECTORS = [
   { id: "farm",   icon: "🌾", color: "#FEF3E2", borderColor: "#F0C87A", label: "Farmers Expense Tracker",     desc: "Seeds, fertilizer, labor, and all farm costs" },
 ];
 
-// ── Auth helpers ──
+//    Auth helpers   
 const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
 const isAlphaName  = (v) => /^[a-zA-Z\s'\-]+$/.test(v.trim());
 
 const findAccount = (email) => { try { const a = JSON.parse(localStorage.getItem("sl_accounts_v1")) || {}; return a[email.toLowerCase()] || null; } catch { return null; } };
-// ═══════════════════════════════════════════════════════════════
-// AUTH LAYER — Firebase-ready
-// ─────────────────────────────────────────────────────────────
+//                                                                
+// AUTH LAYER   Firebase-ready
+//                                                              
 // STEP 1 (now): Uses localStorage auth (works offline, no backend)
 // STEP 2 (later): Swap FIREBASE_CONFIG and set USE_FIREBASE = true
 //                 Everything else stays identical.
-// ═══════════════════════════════════════════════════════════════
+//                                                                
 
-// ── Backend API URL ──────────────────────────────────────────────
-const API_URL = "https://recordchief-backend-production.up.railway.app";
+//    Backend API URL                                               
+const API_URL = "https://recordchief-backend-production-019b.up.railway.app";
 
-// ── Auth API — calls the real backend ────────────────────────────
+//    Auth API   calls the real backend                             
 const AuthAPI = {
 
   async signUp({ name, email, phone, location, password, sectors }) {
@@ -723,7 +921,15 @@ const AuthAPI = {
     }
   },
 
-  // Simple hash for offline password verification (not cryptographic — just a fingerprint)
+  // Simple hash for offline password verification (not cryptographic   just a fingerprint)
+  // Immediate push then pull   call after any data write when online
+  async syncNow(uid) {
+    if (!navigator.onLine) return;
+    await this.syncToServer(uid).catch(() => {});
+    await new Promise(r => setTimeout(r, 800));
+    await this.syncFromServer(uid).catch(() => {});
+  },
+
   _hashPw(pw) {
     let h = 0;
     for (let i = 0; i < pw.length; i++) { h = (Math.imul(31, h) + pw.charCodeAt(i)) | 0; }
@@ -735,15 +941,21 @@ const AuthAPI = {
 
     // Try online first with a short timeout
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
+      // AbortController with fallback for Android 6 / old browsers
+      let signal = undefined;
+      let timeout = null;
+      if (typeof AbortController !== "undefined") {
+        const controller = new AbortController();
+        signal = controller.signal;
+        timeout = setTimeout(() => controller.abort(), 20000); // 20s for Railway cold start
+      }
       const res = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-        signal: controller.signal,
+        ...(signal ? { signal } : {}),
       });
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       const data = await res.json();
       if (!res.ok) return { ok: false, error: data.error || "Login failed." };
       const user = { ...data.user, uid: data.user._id };
@@ -756,7 +968,7 @@ const AuthAPI = {
       }));
       return { ok: true, user };
     } catch(e) {
-      // Network failed or timed out — try offline fallback
+      // Network failed or timed out   try offline fallback
       const offlineRec = (() => { try { return JSON.parse(localStorage.getItem(`rc_offline_${emailKey}`)); } catch { return null; } })();
       const session    = (() => { try { return JSON.parse(localStorage.getItem("rc_session")); } catch { return null; } })();
       const token      = localStorage.getItem("rc_token");
@@ -808,28 +1020,77 @@ const AuthAPI = {
     const token = localStorage.getItem("rc_token");
     if (!token || !navigator.onLine) return;
     try {
+      // Read from IDB first, fall back to localStorage
+      const read = async (lsKey) => {
+        const idbVal = await IDB.get(lsKey);
+        if (idbVal !== undefined) return idbVal;
+        const raw = localStorage.getItem(lsKey);
+        return raw ? JSON.parse(raw) : null;
+      };
+
+      const [inv, sales, farm, entries, salesGroups, fields, debt] = await Promise.all([
+        read(`sl_inv_${uid}`),
+        read(`sl_shopsales_${uid}`),
+        // Read all farm expenses (multi-farm: merge all farm-specific keys)
+        (async () => {
+          const farmsKey = `sl_farms_${uid}`;
+          let farms = await IDB.get(farmsKey);
+          if (!farms) { const r = localStorage.getItem(farmsKey); farms = r ? JSON.parse(r) : null; }
+          if (farms && farms.length > 0) {
+            const allExp = [];
+            for (const f of farms) {
+              const fkey = `sl_farm_${uid}_${f.id}`;
+              let fe = await IDB.get(fkey);
+              if (!fe) { const r = localStorage.getItem(fkey); fe = r ? JSON.parse(r) : []; }
+              allExp.push(...(fe || []));
+            }
+            return allExp;
+          }
+          // Legacy single-farm key fallback
+          const r = await IDB.get(`sl_farm_${uid}`);
+          if (r !== undefined) return r;
+          const raw = localStorage.getItem(`sl_farm_${uid}`);
+          return raw ? JSON.parse(raw) : [];
+        })(),
+        read(`sl_sales_${uid}`),
+        read(`sl_sales_groups_${uid}`),
+        read(`sl_sales_fields_${uid}`),
+        read(`sl_debt_${uid}`),
+      ]);
+
+      // Low-bandwidth: only send if there's actual data
+      const isStaff = (() => { try { return JSON.parse(localStorage.getItem("rc_session")||"{}").role==="staff"; } catch{return false;} })();
       const payload = {
-        inventory:    JSON.parse(localStorage.getItem(`sl_inv_${uid}`)          || "[]"),
-        shopSales:    JSON.parse(localStorage.getItem(`sl_shopsales_${uid}`)    || "[]"),
-        farmExpenses: JSON.parse(localStorage.getItem(`sl_farm_${uid}`)         || "[]"),
-        salesEntries: JSON.parse(localStorage.getItem(`sl_sales_${uid}`)        || "[]"),
-        salesFields:  JSON.parse(localStorage.getItem(`sl_sales_fields_${uid}`) || "null"),
-        debtRecords:  JSON.parse(localStorage.getItem(`sl_debt_${uid}`)         || "[]"),
+        inventory:    inv    || [],
+        shopSales:    sales  || [],
+        farmExpenses: isStaff ? undefined : (farm    || []),
+        salesEntries: isStaff ? undefined : (entries || []),
+        salesGroups:  isStaff ? undefined : (salesGroups || []),
+        salesFields:  isStaff ? undefined : (fields  || null),
+        debtRecords:  isStaff ? undefined : (debt    || []),
         settings: {
           sector:   localStorage.getItem("sl_sector"),
           darkMode: localStorage.getItem("sl_darkmode"),
-          sectors:  localStorage.getItem(`sl_user`) ? JSON.parse(localStorage.getItem("sl_user") || "{}").sectors : null,
         },
+        clientTs: new Date().toISOString(),
+        // Include farm structure for multi-farm support
+        farmStructure: (() => {
+          try {
+            const fk = `sl_farms_${uid}`;
+            return JSON.parse(localStorage.getItem(fk)) || null;
+          } catch { return null; }
+        })(),
       };
+
       await fetch(`${API_URL}/api/data`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload),
       });
-    } catch(e) { /* silent — data safe in localStorage */ }
+    } catch(e) { /* silent — data safe locally */ }
   },
 
-  // Pull ALL data from server and restore to localStorage — triggers UI refresh
+  // Pull ALL data from server and restore to localStorage   triggers UI refresh
   async syncFromServer(uid) {
     const token = localStorage.getItem("rc_token");
     if (!token || !navigator.onLine) return;
@@ -843,31 +1104,65 @@ const AuthAPI = {
 
       let changed = false;
 
-      const apply = (key, val) => {
-        if (val === undefined || val === null) return;
-        const str = JSON.stringify(val);
-        if (localStorage.getItem(key) !== str) {
-          localStorage.setItem(key, str);
-          changed = true;
-        }
+      // Write to IDB and localStorage together
+      const persist = async (key, val) => {
+        localStorage.setItem(key, JSON.stringify(val));
+        await IDB.set(key, val);
       };
 
-      apply(`sl_inv_${uid}`,           data.inventory);
-      apply(`sl_shopsales_${uid}`,     data.shopSales);
-      apply(`sl_farm_${uid}`,          data.farmExpenses);
-      apply(`sl_sales_${uid}`,         data.salesEntries);
-      apply(`sl_sales_fields_${uid}`,  data.salesFields);
-      apply(`sl_debt_${uid}`,          data.debtRecords);
+      const safeApply = async (key, serverVal, label) => {
+        if (serverVal === undefined || serverVal === null) return;
+        try {
+          let localVal = await IDB.get(key);
+          if (localVal === undefined) {
+            const raw = localStorage.getItem(key);
+            localVal = raw ? JSON.parse(raw) : null;
+          }
 
-      // Restore settings
+          // Server ALWAYS wins   it's the single source of truth
+          // Exception: if server returns empty array but we have local data,
+          // keep local (protects against Railway cold-start empty response)
+          if (Array.isArray(serverVal) && Array.isArray(localVal)) {
+            if (serverVal.length === 0 && localVal.length > 0) {
+              SyncLog.add({ type:"kept_local", label, localCount:localVal.length, serverCount:0, reason:"Server returned empty — kept local" });
+              return;
+            }
+            if (serverVal.length !== localVal.length) {
+              SyncLog.add({
+                type:"applied_server", label,
+                localCount: localVal.length,
+                serverCount: serverVal.length,
+                reason: serverVal.length > localVal.length ? "Server has more records" : "Server has fewer records (deletion synced)"
+              });
+            }
+          }
+
+          const serverStr = JSON.stringify(serverVal);
+          const localStr  = JSON.stringify(localVal);
+          if (localStr !== serverStr) {
+            await persist(key, serverVal);
+            changed = true;
+          }
+        } catch(e) {}
+      };
+
+      await Promise.all([
+        safeApply(`sl_inv_${uid}`,          data.inventory,    "Inventory"),
+        safeApply(`sl_shopsales_${uid}`,    data.shopSales,    "Shop Sales"),
+        safeApply(`sl_farm_${uid}`,         data.farmExpenses, "Farm Expenses"),
+        safeApply(`sl_sales_${uid}`,        data.salesEntries, "Customer Records"),
+        safeApply(`sl_sales_fields_${uid}`, data.salesFields,  "Sales Fields"),
+        safeApply(`sl_debt_${uid}`,         data.debtRecords,  "Debt Records"),
+        safeApply(`sl_sales_groups_${uid}`,  data.salesGroups || [], "Sales Groups"),
+      ]);
+
       if (data.settings?.darkMode !== undefined) {
         localStorage.setItem("sl_darkmode", data.settings.darkMode);
       }
 
-      // If data changed, fire a custom event so React re-renders
-      if (changed) {
-        window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
-      }
+      localStorage.setItem("rc_last_sync", new Date().toISOString());
+
+      window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
     } catch(e) { /* silent */ }
   },
 
@@ -877,6 +1172,76 @@ const AuthAPI = {
 };
 
 
+
+
+// ===================== SECTOR TOUR CARDS =====================
+const SECTOR_TOURS = {
+  shop: {
+    tagline: "Record a sale in 3 taps",
+    steps: ["Tap + → Record Sale", "Pick item & quantity", "Sale saved instantly ✅"],
+    gradient: "linear-gradient(135deg,#1E40AF,#2563EB)",
+  },
+  farm: {
+    tagline: "Log any farm expense in seconds",
+    steps: ["Tap + → Add Expense", "Enter amount & category", "See spend by category 📊"],
+    gradient: "linear-gradient(135deg,#065F46,#059669)",
+  },
+  sales: {
+    tagline: "Track every customer & deal",
+    steps: ["Create custom fields", "Add a customer record", "Search & export anytime 📤"],
+    gradient: "linear-gradient(135deg,#5B21B6,#7C3AED)",
+  },
+};
+
+function SectorTourCards({ selectedSectors, toggleSector }) {
+  const [expanded, setExpanded] = useState(null);
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:16 }}>
+      {ALL_SECTORS.map(s => {
+        const active = selectedSectors.includes(s.id);
+        const tour   = SECTOR_TOURS[s.id];
+        const isOpen = expanded === s.id;
+        return (
+          <div key={s.id} style={{ borderRadius:14, overflow:"hidden", border:active ? `2px solid ${s.borderColor}` : `1.5px solid ${COLORS.border}`, transition:"all 0.18s", background:active ? s.color : COLORS.surface }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 14px", cursor:"pointer" }}
+              onClick={() => toggleSector(s.id)}>
+              <div style={{ width:44, height:44, borderRadius:10, background:s.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>{s.icon}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:COLORS.text }}>{s.label}</div>
+                <div style={{ fontSize:11, color:COLORS.textMuted, marginTop:1 }}>{s.desc}</div>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+                <button onClick={e => { e.stopPropagation(); setExpanded(isOpen ? null : s.id); }}
+                  style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:6, padding:"3px 8px", fontSize:10, fontWeight:700, color:COLORS.primary, cursor:"pointer", fontFamily:"'Inter',sans-serif", whiteSpace:"nowrap" }}>
+                  {isOpen ? "Hide ▲" : "Preview ▾"}
+                </button>
+                <div style={{ width:22, height:22, borderRadius:"50%", border:active ? "none" : `1.5px solid ${COLORS.border}`, background:active ? COLORS.primary : "transparent", display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.15s" }}>
+                  {active && <Icon name="check" size={13} />}
+                </div>
+              </div>
+            </div>
+            {isOpen && (
+              <div style={{ background:tour.gradient, padding:"14px 16px" }}>
+                <div style={{ fontSize:12, fontWeight:800, color:"#fff", marginBottom:10 }}>⚡ {tour.tagline}</div>
+                <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                  {tour.steps.map((step, i) => (
+                    <React.Fragment key={i}>
+                      <div style={{ flex:1, background:"rgba(255,255,255,0.15)", borderRadius:10, padding:"8px", textAlign:"center" }}>
+                        <div style={{ fontSize:10, fontWeight:600, color:"rgba(255,255,255,0.7)", marginBottom:3 }}>Step {i+1}</div>
+                        <div style={{ fontSize:11, fontWeight:700, color:"#fff", lineHeight:1.4 }}>{step}</div>
+                      </div>
+                      {i < tour.steps.length-1 && <div style={{ color:"rgba(255,255,255,0.5)", fontSize:16, flexShrink:0 }}>›</div>}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function SignupScreen({ onAuth, onNavigate }) {
   const [step, setStep] = useState(1);
@@ -932,16 +1297,14 @@ function SignupScreen({ onAuth, onNavigate }) {
   };
 
   if (step === 2) return (
-    <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "2.5rem" }}>
-      <div className="auth-card" style={{ maxWidth: 400 }}>
+    <div className="welcome-screen" style={{ justifyContent: "flex-start", paddingTop: "2rem", paddingBottom: "2rem" }}>
+      <div className="auth-card" style={{ maxWidth: 420 }}>
         <button onClick={() => setStep(1)} style={{ background: "none", border: "none", color: COLORS.textMuted, marginBottom: 14, display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
           <Icon name="back" size={16} /> Back
         </button>
-        <div style={{ display: "flex", align: "center", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 24 }}>🗂️</span>
-        </div>
-        <div className="auth-title" style={{ marginTop: 6 }}>Pick your sectors</div>
-        <div className="auth-sub">Select all that apply — you can use multiple sectors at once. You can always change this later in your profile.</div>
+        <div style={{ fontSize: 24, marginBottom: 4 }}>🗂️</div>
+        <div className="auth-title" style={{ marginTop: 4 }}>Pick your sectors</div>
+        <div className="auth-sub">Tap a sector to see what it does — then select the ones you need.</div>
 
         {sectorError && (
           <div style={{ background: COLORS.dangerLight, color: COLORS.danger, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 12, fontWeight: 500 }}>
@@ -949,43 +1312,20 @@ function SignupScreen({ onAuth, onNavigate }) {
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
-          {ALL_SECTORS.map(s => {
-            const active = selectedSectors.includes(s.id);
-            return (
-              <div key={s.id} onClick={() => toggleSector(s.id)} style={{
-                display: "flex", alignItems: "center", gap: 14, padding: "14px 14px",
-                borderRadius: 12, cursor: "pointer", transition: "all 0.18s",
-                border: active ? `2px solid ${s.borderColor}` : `1.5px solid ${COLORS.border}`,
-                background: active ? s.color : COLORS.surface,
-              }}>
-                <div style={{ width: 44, height: 44, borderRadius: 10, background: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{s.icon}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{s.label}</div>
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>{s.desc}</div>
-                </div>
-                <div style={{
-                  width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
-                  border: active ? "none" : `1.5px solid ${COLORS.border}`,
-                  background: active ? COLORS.primary : "transparent",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  transition: "all 0.15s",
-                }}>
-                  {active && <Icon name="check" size={13} />}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        {/* Sector cards with mini-tour preview */}
+        <SectorTourCards
+          selectedSectors={selectedSectors}
+          toggleSector={toggleSector}
+        />
 
         <div style={{ background: COLORS.primaryLight, borderRadius: 8, padding: "8px 12px", fontSize: 12, color: COLORS.primary, marginBottom: 14, display: "flex", gap: 6, alignItems: "flex-start" }}>
-          <span style={{ marginTop: 1 }}>💡</span>
-          <span>You can switch between your selected sectors any time from the home screen.</span>
+          <span>💡</span>
+          <span>You can add or remove sectors any time from your profile settings.</span>
         </div>
 
         <button className="btn btn-primary" onClick={submit} disabled={loading || selectedSectors.length === 0}
           style={{ opacity: selectedSectors.length === 0 ? 0.5 : 1 }}>
-          {loading ? "Creating account…" : `Finish — ${selectedSectors.length === 0 ? "Select a sector" : `${selectedSectors.length} sector${selectedSectors.length > 1 ? "s" : ""} selected`}`}
+          {loading ? "Creating account…" : selectedSectors.length === 0 ? "Select at least one sector" : `Finish — ${selectedSectors.length} sector${selectedSectors.length > 1 ? "s" : ""} selected ✓`}
         </button>
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 12, color: COLORS.textLight }}>Step 2 of 2</div>
       </div>
@@ -1126,8 +1466,21 @@ function LoginScreen({ onAuth, onNavigate }) {
       <div style={{ background: "#fff", borderRadius: 24, padding: "28px 24px 36px", width: "100%", maxWidth: 400, marginBottom: 32, boxShadow: "0 8px 40px rgba(15,23,42,0.18)" }}>
         <button onClick={() => onNavigate("welcome")} style={{ background: "none", border: "none", color: COLORS.textMuted, marginBottom: 16, display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}><Icon name="back" size={16} /> Back</button>
         {error && (
-          <div style={{ background: COLORS.dangerLight, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16, display: "flex", gap: 8, alignItems: "center" }}>
-            <span>⚠️</span>{error}
+          <div style={{
+            background: error.includes("waking up") || error.includes("too long") ? "#FEF3C7" : COLORS.dangerLight,
+            color: error.includes("waking up") || error.includes("too long") ? "#92400E" : COLORS.danger,
+            borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16,
+          }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <span>{error.includes("waking up") || error.includes("too long") ? "⏳" : "⚠️"}</span>
+              <span style={{ lineHeight: 1.5 }}>{error}</span>
+            </div>
+            {(error.includes("waking up") || error.includes("too long")) && (
+              <button onClick={submit} disabled={loading}
+                style={{ marginTop: 10, background: "#2563EB", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif", width: "100%" }}>
+                🔄 Try Again
+              </button>
+            )}
           </div>
         )}
         <div className="form-group">
@@ -1156,156 +1509,184 @@ function LoginScreen({ onAuth, onNavigate }) {
 
 // ===================== HOME (SECTOR PICKER) =====================
 function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview, onViewDebt }) {
-  const userSectors = (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
+  const userSectors = user.role === "staff" ? ["shop"] : (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
   const activeSectors = ALL_SECTORS.filter(s => userSectors.includes(s.id));
-  const avatarKey = `sl_avatar_${user.uid}`;
+  const avatarKey  = `sl_avatar_${user.uid}`;
   const storedAvatar = (() => { try { return JSON.parse(localStorage.getItem(avatarKey)); } catch { return null; } })();
   const initials = user.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const greeting = hour < 5 ? "Good night" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const greetEmoji = hour < 5 ? "🌙" : hour < 12 ? "☀️" : hour < 17 ? "🌤️" : "🌙";
   const today = new Date().toLocaleDateString("en-NG", { weekday: "long", day: "numeric", month: "long" });
+
+  // Quick stats
+  const invKey   = `sl_inv_${user.uid}`;
+  const salesKey = `sl_shopsales_${user.uid}`;
+  const debtKey  = `sl_debt_${user.uid}`;
+  const inv   = (() => { try { return JSON.parse(localStorage.getItem(invKey))   || []; } catch { return []; } })();
+  const sales = (() => { try { return JSON.parse(localStorage.getItem(salesKey)) || []; } catch { return []; } })();
+  const debts = (() => { try { return JSON.parse(localStorage.getItem(debtKey))  || []; } catch { return []; } })();
+  const todaySales  = sales.filter(s => s.date === TODAY()).reduce((a, s) => a + (s.total || 0), 0);
+  const outstanding = debts.filter(r => !r.settled).length;
+  const overdue     = debts.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
+  const lowStock    = inv.filter(i => i.stock < 5).length;
+
+  const sectorGradients = {
+    shop:  "linear-gradient(135deg, #1E40AF 0%, #2563EB 100%)",
+    farm:  "linear-gradient(135deg, #065F46 0%, #059669 100%)",
+    sales: "linear-gradient(135deg, #5B21B6 0%, #7C3AED 100%)",
+    debt:  overdue > 0
+      ? "linear-gradient(135deg, #991B1B 0%, #DC2626 100%)"
+      : "linear-gradient(135deg, #1E3A8A 0%, #4338CA 100%)",
+  };
 
   return (
     <div style={{ paddingBottom: 16 }}>
-      {/* Hero greeting banner */}
+
+      {/* ── Hero banner ── */}
       <div style={{
-        background: `linear-gradient(135deg, ${COLORS.primary} 0%, ${COLORS.primaryDark} 50%, #1E3A8A 100%)`,
-        borderRadius: 20, padding: "20px 18px", marginBottom: "1rem",
+        background: "linear-gradient(135deg, #1E3A8A 0%, #1D4ED8 55%, #0F766E 100%)",
+        borderRadius: 22, padding: "22px 18px 18px", marginBottom: "1rem",
         position: "relative", overflow: "hidden", color: "#fff",
       }}>
-        <div style={{ position: "absolute", top: -24, right: -24, width: 96, height: 96, borderRadius: "50%", background: "rgba(255,255,255,0.07)" }} />
-        <div style={{ position: "absolute", bottom: -16, right: 40, width: 64, height: 64, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 46, height: 46, borderRadius: "50%", background: "rgba(255,255,255,0.2)", border: "2px solid rgba(255,255,255,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, overflow: "hidden", flexShrink: 0 }}>
-            {storedAvatar ? <img src={storedAvatar} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" /> : initials}
+        {/* Decorative circles */}
+        <div style={{ position:"absolute", top:-30, right:-30, width:110, height:110, borderRadius:"50%", background:"rgba(255,255,255,0.06)", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", bottom:-20, left:-20, width:80, height:80, borderRadius:"50%", background:"rgba(255,255,255,0.04)", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", top:10, right:80, width:50, height:50, borderRadius:"50%", background:"rgba(255,255,255,0.04)", pointerEvents:"none" }} />
+
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
+          <div style={{ width:48, height:48, borderRadius:"50%", background:"rgba(255,255,255,0.18)", border:"2px solid rgba(255,255,255,0.35)", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:17, overflow:"hidden", flexShrink:0 }}>
+            {storedAvatar ? <img src={storedAvatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} alt="" /> : initials}
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, opacity: 0.7, fontWeight: 400 }}>{greeting} 👋</div>
-            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 1 }}>{user.name.split(" ")[0]}</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, opacity:0.75, fontWeight:500 }}>{greeting} {greetEmoji}</div>
+            <div style={{ fontSize:20, fontWeight:800, marginTop:1, letterSpacing:"-0.3px" }}>{user.name.split(" ")[0]}</div>
           </div>
           <button onClick={onViewOverview} style={{
-            background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)",
-            borderRadius: 12, padding: "7px 12px", color: "#fff", cursor: "pointer",
-            fontFamily: "'Inter', sans-serif", display: "flex", flexDirection: "column",
-            alignItems: "center", gap: 2, transition: "background 0.15s", flexShrink: 0,
+            background:"rgba(255,255,255,0.15)", border:"1.5px solid rgba(255,255,255,0.3)",
+            borderRadius:12, padding:"8px 12px", color:"#fff", cursor:"pointer",
+            fontFamily:"'Inter', sans-serif", display:"flex", flexDirection:"column",
+            alignItems:"center", gap:3, transition:"background 0.15s", flexShrink:0,
           }}>
-            <span style={{ fontSize: 16 }}>📊</span>
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", opacity: 0.9 }}>OVERVIEW</span>
+            <span style={{ fontSize:18 }}>📊</span>
+            <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.06em", opacity:0.9 }}>OVERVIEW</span>
           </button>
         </div>
-        <div style={{ fontSize: 11, opacity: 0.55, marginTop: 10, display: "flex", alignItems: "center", gap: 4 }}>
-          📅 {today}
-          {user.location && <> · 📍 {user.location}</>}
+
+        {/* Quick stat row inside hero */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+          {[
+            { label:"Today's Sales", value: todaySales > 0 ? NAIRA(todaySales) : "₦0", icon:"💰", color:"rgba(255,255,255,0.9)" },
+            { label:"Outstanding", value: outstanding > 0 ? `${outstanding} record${outstanding !== 1 ? "s" : ""}` : "All clear", icon:"🤝", color: outstanding > 0 ? "#FCD34D" : "rgba(255,255,255,0.9)" },
+            { label:"Low Stock", value: lowStock > 0 ? `${lowStock} item${lowStock !== 1 ? "s" : ""}` : "All good", icon:"📦", color: lowStock > 0 ? "#FCA5A5" : "rgba(255,255,255,0.9)" },
+          ].map((stat, i) => (
+            <div key={i} style={{ background:"rgba(255,255,255,0.1)", borderRadius:12, padding:"10px 10px 8px", border:"1px solid rgba(255,255,255,0.12)" }}>
+              <div style={{ fontSize:16, marginBottom:4 }}>{stat.icon}</div>
+              <div style={{ fontSize:12, fontWeight:800, color:stat.color, lineHeight:1.2 }}>{stat.value}</div>
+              <div style={{ fontSize:9, opacity:0.65, marginTop:3, fontWeight:500 }}>{stat.label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize:10, opacity:0.5, marginTop:12, display:"flex", alignItems:"center", gap:5 }}>
+          📅 {today}{user.location && <> · 📍 {user.location}</>}
         </div>
       </div>
 
       {/* Notification banner */}
       <NotificationBanner user={user} />
 
-      {/* Cloud backup reminder — only show offline */}
+      {/* Cloud backup reminder — offline only */}
       {!navigator.onLine && (() => {
         const lastExportKey = `sl_lastexport_${user?.uid}`;
         const lastExport = localStorage.getItem(lastExportKey);
         const daysSince = lastExport ? Math.floor((Date.now() - new Date(lastExport)) / 86400000) : 999;
         if (daysSince < 7) return null;
         return (
-          <div style={{ background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "10px 14px", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 20, flexShrink: 0 }}>☁️</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.primary }}>
-                {lastExport ? `No export in ${daysSince} days` : "No local backup yet"}
-              </div>
-              <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 1 }}>Export your records to keep a local copy.</div>
+          <div style={{ background:"var(--primary-light)", border:`1.5px solid var(--primary)`, borderRadius:12, padding:"10px 14px", marginBottom:"0.75rem", display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:20, flexShrink:0 }}>☁️</span>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:"var(--primary)" }}>{lastExport ? `No export in ${daysSince} days` : "No local backup yet"}</div>
+              <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:1 }}>Export your records to keep a local copy.</div>
             </div>
             <button onClick={() => { setShowExport(true); localStorage.setItem(lastExportKey, new Date().toISOString()); }} style={{
-              flexShrink: 0, background: COLORS.primary, color: "#fff", border: "none", borderRadius: 8,
-              padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+              flexShrink:0, background:"var(--primary)", color:"#fff", border:"none", borderRadius:8,
+              padding:"6px 12px", fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"'Inter', sans-serif",
             }}>Export</button>
           </div>
         );
       })()}
 
-      {/* Quick action grid */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.6rem" }}>
-        <div className="section-title" style={{ margin: 0 }}>Your Sectors</div>
-        <button onClick={onManageSectors} style={{ background: "none", border: "none", color: COLORS.primary, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", display: "flex", alignItems: "center", gap: 4 }}>
+      {/* ── Sectors ── */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"0.7rem" }}>
+        <div className="section-title" style={{ margin:0 }}>Your Sectors</div>
+        <button onClick={onManageSectors} style={{ background:"none", border:"none", color:"var(--primary)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Inter', sans-serif", display:"flex", alignItems:"center", gap:4 }}>
           <Icon name="settings" size={13} /> Manage
         </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: "1.25rem" }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:"1rem" }}>
         {activeSectors.map(s => (
-          <div key={s.id} onClick={() => onSetSector(s.id)}
-            onMouseEnter={e => {
-              e.currentTarget.style.border = `2px solid ${s.borderColor}`;
-              e.currentTarget.style.background = s.color;
-              e.currentTarget.style.boxShadow = `0 4px 14px ${s.borderColor}55`;
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.border = `1.5px solid ${COLORS.border}`;
-              e.currentTarget.style.background = COLORS.surface;
-              e.currentTarget.style.boxShadow = "0 1px 3px rgba(15,23,42,0.04)";
-            }}
-            style={{
-              borderRadius: 16, padding: "16px 14px",
-              border: `1.5px solid ${COLORS.border}`,
-              background: COLORS.surface,
-              cursor: "pointer", transition: "all 0.18s",
-              boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-            }}>
-            <div style={{ fontSize: 28, marginBottom: 8 }}>{s.icon}</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text, lineHeight: 1.3 }}>
-              {s.id === "sales" ? "Sales Rep" : s.id === "shop" ? "Shop Sales" : "Farm"}
+          <button key={s.id} onClick={() => onSetSector(s.id)} style={{
+            borderRadius:18, padding:"18px 14px",
+            background:sectorGradients[s.id] || sectorGradients.shop,
+            border:"none", cursor:"pointer", transition:"all 0.18s",
+            boxShadow:"0 4px 16px rgba(0,0,0,0.18)",
+            textAlign:"left", position:"relative", overflow:"hidden",
+          }}>
+            <div style={{ position:"absolute", top:-16, right:-16, width:60, height:60, borderRadius:"50%", background:"rgba(255,255,255,0.08)" }} />
+            <div style={{ fontSize:30, marginBottom:10 }}>{s.icon}</div>
+            <div style={{ fontSize:14, fontWeight:800, color:"#fff", lineHeight:1.3 }}>
+              {s.id === "sales" ? "Sales Rep" : s.id === "shop" ? "Shop Sales" : s.id === "farm" ? "Farm Records" : s.label}
             </div>
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 3, lineHeight: 1.4 }}>{s.desc.split("—")[0].trim()}</div>
-          </div>
+            <div style={{ fontSize:10, color:"rgba(255,255,255,0.65)", marginTop:4, lineHeight:1.4 }}>
+              {s.desc.split("—")[0].trim()}
+            </div>
+          </button>
         ))}
+
         {activeSectors.length === 0 && (
-          <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "2rem", color: COLORS.textMuted, fontSize: 13 }}>
-            <div style={{ fontSize: 36, marginBottom: 8 }}>🗂️</div>
+          <div style={{ gridColumn:"1 / -1", textAlign:"center", padding:"2rem", color:"var(--text-muted)", fontSize:13 }}>
+            <div style={{ fontSize:36, marginBottom:8 }}>🗂️</div>
             Tap Manage to select your sectors
           </div>
         )}
-        {/* Debt & Credit card — always shown, always clickable */}
-        {(() => {
-          const debtKey = `sl_debt_${user.uid}`;
-          const recs = (() => { try { return JSON.parse(localStorage.getItem(debtKey)) || []; } catch { return []; } })();
-          const outstanding = recs.filter(r => !r.settled).length;
-          const overdue     = recs.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
-          return (
-            <div onClick={onViewDebt} style={{
-              gridColumn: "1 / -1",
-              borderRadius: 16, padding: "16px 14px",
-              border: `2px solid ${overdue > 0 ? "#FCA5A5" : "#C7D2FE"}`,
-              background: overdue > 0 ? "#FEF2F2" : "#EEF2FF",
-              cursor: "pointer", transition: "all 0.18s",
-              boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-              display: "flex", alignItems: "center", gap: 14,
-              position: "relative", overflow: "hidden",
-            }}>
-              <div style={{ height: 3, position: "absolute", top: 0, left: 0, right: 0, background: overdue > 0 ? "#EF4444" : "#6366F1", borderRadius: "14px 14px 0 0" }} />
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: overdue > 0 ? "#FEE2E2" : "#E0E7FF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>🤝</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>Debt & Credit</div>
-                <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
-                  {outstanding > 0 ? `${outstanding} outstanding record${outstanding !== 1 ? "s" : ""}` : "No outstanding records"}
-                </div>
-              </div>
-              {overdue > 0 && (
-                <div style={{ background: "#EF4444", color: "#fff", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                  {overdue} overdue
-                </div>
-              )}
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={COLORS.textMuted} strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
-            </div>
-          );
-        })()}
-      </div>
 
-      {/* Bottom caption */}
-      <div style={{ textAlign: "center", marginTop: "1.5rem", paddingBottom: 4 }}>
-        <div style={{ fontSize: 11, color: COLORS.textLight, fontStyle: "italic", letterSpacing: "0.02em" }}>
-          Your business records, organized
+        {user.role !== "staff" && <button onClick={onViewDebt} style={{
+          gridColumn:"1 / -1",
+          borderRadius:18, padding:"16px 18px",
+          background:sectorGradients.debt,
+          border:"none", cursor:"pointer", transition:"all 0.18s",
+          boxShadow:`0 4px 16px ${overdue > 0 ? "rgba(220,38,38,0.3)" : "rgba(79,70,229,0.25)"}`,
+          display:"flex", alignItems:"center", gap:14, textAlign:"left",
+          position:"relative", overflow:"hidden",
+        }}>
+          <div style={{ position:"absolute", top:-20, right:-20, width:70, height:70, borderRadius:"50%", background:"rgba(255,255,255,0.07)" }} />
+          <div style={{ width:46, height:46, borderRadius:13, background:"rgba(255,255,255,0.18)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, flexShrink:0 }}>🤝</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>Debt & Credit</div>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,0.65)", marginTop:3 }}>
+              {outstanding > 0 ? `${outstanding} outstanding record${outstanding !== 1 ? "s" : ""}` : "No outstanding records"}
+            </div>
+          </div>
+          {overdue > 0 ? (
+            <div style={{ background:"rgba(255,255,255,0.22)", color:"#fff", borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:800, flexShrink:0 }}>
+              ⚠️ {overdue} overdue
+            </div>
+          ) : (
+            <div style={{ background:"rgba(255,255,255,0.15)", color:"rgba(255,255,255,0.8)", borderRadius:20, padding:"4px 12px", fontSize:11, fontWeight:600, flexShrink:0 }}>
+              View →
+            </div>
+          )}
+        </button>}
+
+      {/* ── Motivational footer ── */}
+      <div style={{ textAlign:"center", marginTop:"1rem", padding:"14px 16px", background:"var(--surface)", borderRadius:16, border:"1px solid var(--border)" }}>
+        <div style={{ fontSize:13, fontWeight:600, color:"var(--text)", marginBottom:3 }}>
+          📒 Record Chief
+        </div>
+        <div style={{ fontSize:11, color:"var(--text-muted)", letterSpacing:"0.01em" }}>
+          Your business records, always organized
         </div>
       </div>
 
@@ -1315,37 +1696,71 @@ function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview
 
 // ===================== SALES REP MODE =====================
 function SalesRepScreen({ user }) {
-  const storageKey = `sl_sales_${user.uid}`;
-  const fieldsKey = `sl_sales_fields_${user.uid}`;
-  const [entries, setEntries] = useLocalState(storageKey, []);
-  const [fields, setFields] = useLocalState(fieldsKey, null);
-  const [tab, setTab] = useState("entry");
-  const [search, setSearch] = useState("");
-  const [toast, setToast] = useState(null);
-  const [form, setForm] = useState({});
-  const [errors, setErrors] = useState({});
-  const [editId, setEditId] = useState(null);
-  const [setupMode, setSetupMode] = useState(false);
-  const [draftFields, setDraftFields] = useState([]);
-  const [showExport, setShowExport] = useState(false);
-  const [showEntryForm, setShowEntryForm] = useState(false);
-  const [sortBy, setSortBy] = useState("date_desc");
-  const [showFilters, setShowFilters] = useState(false);
-  const [showManageFields, setShowManageFields] = useState(false);
-  const [showFieldChoice, setShowFieldChoice] = useState(false);
+  const storageKey  = `sl_sales_${user.uid}`;
+  const fieldsKey   = `sl_sales_fields_${user.uid}`;
+  const groupsKey   = `sl_sales_groups_${user.uid}`; // archived groups
 
-  const showToast = (msg, type = "success") => { setToast({ msg, type }); };
+  // Groups = array of { id, name, fields[], entries[] }    archived sets
+  const [groups,  setGroups]  = useLocalState(groupsKey, []);
+  // Active entries (current group)
+  const [entries, setEntries] = useLocalState(storageKey, []);
+  // Active fields (current group)
+  const [fields,  setFields]  = useLocalState(fieldsKey, null);
 
   const defaultFields = [
-    { id: "f_date", name: "Date", type: "Date" },
+    { id: "f_date",  name: "Date",  type: "Date" },
     { id: "f_notes", name: "Notes", type: "Text" },
   ];
   const activeFields = fields || defaultFields;
 
-  useEffect(() => {
-    // Show manage fields on first open if no fields defined
-    if (!fields) setShowManageFields(false); // handled via inline prompt
-  }, []);
+  const [search,          setSearch]          = useState("");
+  const [toast,           setToast]           = useState(null);
+  const [form,            setForm]            = useState({});
+  const [errors,          setErrors]          = useState({});
+  const [editId,          setEditId]          = useState(null);
+  const [setupMode,       setSetupMode]       = useState(false);
+  const [draftFields,     setDraftFields]     = useState([]);
+  const [showExport,      setShowExport]      = useState(false);
+  const [showEntryForm,   setShowEntryForm]   = useState(false);
+  const [sortBy,          setSortBy]          = useState("date_desc");
+  const [showManageFields,setShowManageFields]= useState(false);
+  const [viewEntry,       setViewEntry]       = useState(null);
+  const [newGroupName,    setNewGroupName]    = useState("");
+  const [showNewGroup,    setShowNewGroup]    = useState(false);
+
+  const showToast = (msg, type="success") => setToast({ msg, type });
+
+  //    Create new group: archive current entries+fields   fresh slate   
+  const createNewGroup = () => {
+    const name = newGroupName.trim() || `Group ${(groups.length || 0) + 1}`;
+    // Archive existing entries+fields into a group
+    if (entries.length > 0 || (fields && fields.length > 0)) {
+      const archived = {
+        id:        uid(),
+        name,
+        fields:    fields || defaultFields,
+        entries:   entries,
+        createdAt: TS(),
+      };
+      setGroups(prev => [archived, ...(prev || [])]);
+    }
+    // Reset current to blank
+    setEntries([]);
+    setFields(null);
+    setForm({});
+    setNewGroupName("");
+    setShowNewGroup(false);
+    showToast(`"${name}" archived. New group started.`);
+  };
+
+  //    Save fields for current group   
+  const saveCurrentFields = (combined) => {
+    setFields(combined);
+    setDraftFields([]);
+    setSetupMode(false);
+    setShowManageFields(false);
+    showToast("Fields saved!");
+  };
 
   const saveEntry = () => {
     const e = {};
@@ -1356,179 +1771,113 @@ function SalesRepScreen({ user }) {
     const entry = { id: editId || uid(), ...form, createdAt: TS() };
     if (editId) {
       setEntries(prev => prev.map(x => x.id === editId ? entry : x));
-      setEditId(null);
-      showToast("Entry updated!");
+      setEditId(null); showToast("Entry updated!");
     } else {
       setEntries(prev => [entry, ...prev]);
-      showToast("Entry saved!");
+      showToast("Record saved!");
     }
-    setForm({});
-    setShowEntryForm(false);
+    setForm({}); setErrors({}); setShowEntryForm(false);
   };
 
-  const deleteEntry = (id) => { setEntries(prev => prev.filter(x => x.id !== id)); showToast("Entry deleted", "error"); };
-
-  const startEdit = (entry) => {
-    setForm({ ...entry });
-    setEditId(entry.id);
-  };
-
-  const finishSetup = () => {
-    const combined = [...defaultFields, ...draftFields.filter(f => f.name.trim())];
-    setFields(combined);
-    setDraftFields([]);
-    setSetupMode(false);
-    showToast("Columns saved!");
-  };
-
-  // setupMode is now handled inline in the bottom-sheet modal
-
-  const renderField = (field, isFirst = false) => {
-    const val = form[field.id] || "";
-    const err = errors[field.id];
-
-    // Prominent first-field wrapper style
-    const firstWrap = isFirst ? {
-      background: COLORS.primaryLight,
-      border: `1.5px solid ${COLORS.primary}40`,
-      borderRadius: 14,
-      padding: "14px 14px 10px",
-      marginBottom: "1rem",
-    } : {};
-    const firstLabel = isFirst ? { fontSize: 11, fontWeight: 700, color: COLORS.primary, textTransform: "uppercase", letterSpacing: "0.06em" } : {};
-    const firstInput = isFirst ? { fontSize: 16, fontWeight: 600, border: "none", background: "#fff", borderRadius: 10, padding: "12px 14px", boxShadow: "0 1px 4px rgba(37,99,235,0.10)" } : {};
-
-    if (field.type === "Date") return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <input type="date" className={`form-input${err ? " error" : ""}`} style={firstInput} value={val || TODAY()} onChange={e => setForm(p => ({ ...p, [field.id]: e.target.value }))} />
-        {err && <div className="form-error">{err}</div>}
-      </div>
-    );
-    if (field.type === "Number") return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <input type="number" className={`form-input${err ? " error" : ""}`} style={firstInput} placeholder="0" value={val} onChange={e => setForm(p => ({ ...p, [field.id]: e.target.value }))} />
-        {err && <div className="form-error">{err}</div>}
-      </div>
-    );
-    if (field.type === "Yes/No") return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <div style={{ display: "flex", gap: 8 }}>
-          {["Yes", "No"].map(opt => (
-            <button key={opt} className={`btn btn-sm${val === opt ? " btn-primary" : " btn-outline"}`} style={{ flex: 1, ...(isFirst ? { fontWeight: 700, fontSize: 14 } : {}) }} onClick={() => setForm(p => ({ ...p, [field.id]: opt }))}>{opt}</button>
-          ))}
-        </div>
-      </div>
-    );
-    // Text / Notes
-    return (
-      <div style={firstWrap} className={isFirst ? "" : "form-group"} key={field.id}>
-        <label className="form-label" style={firstLabel}>{field.name}</label>
-        <textarea className={`form-input${err ? " error" : ""}`}
-          style={{ ...firstInput, ...(isFirst ? { resize: "none" } : {}) }}
-          rows={isFirst ? 2 : (field.name === "Notes" ? 3 : 1)}
-          placeholder={isFirst ? `Enter ${field.name}…` : `Enter ${field.name}`}
-          value={val}
-          onChange={e => setForm(p => ({ ...p, [field.id]: e.target.value }))} />
-        {err && <div className="form-error">{err}</div>}
-      </div>
-    );
-  };
-
-  const openAdd = () => {
-    setEditId(null);
-    setErrors({});
-    if (fields) {
-      // Fields already set up — ask user: keep or reset
-      setShowFieldChoice(true);
-    } else {
-      // First time — go straight to field setup inside form
-      const preForm = {};
-      defaultFields.forEach(f => { if (f.type === "Date") preForm[f.id] = TODAY(); });
-      setForm(preForm);
-      setShowManageFields(true);
-      setShowEntryForm(true);
-    }
-  };
-
-  const proceedWithExistingFields = () => {
-    const preForm = {};
-    activeFields.forEach(f => { if (f.type === "Date") preForm[f.id] = TODAY(); });
-    setForm(preForm);
-    setShowFieldChoice(false);
-    setShowManageFields(false);
-    setShowEntryForm(true);
-  };
-
-  const proceedWithNewFields = () => {
-    setFields(null);
-    setDraftFields([]);
-    const preForm = {};
-    defaultFields.forEach(f => { if (f.type === "Date") preForm[f.id] = TODAY(); });
-    setForm(preForm);
-    setShowFieldChoice(false);
-    setShowManageFields(true);
-    setShowEntryForm(true);
+  const deleteEntry = (id) => {
+    setEntries(prev => prev.filter(e => e.id !== id));
+    showToast("Deleted", "error");
   };
 
   const openEdit = (entry) => {
-    setForm({ ...entry });
-    setEditId(entry.id);
-    setErrors({});
+    setEditId(entry.id); setForm(entry);
     setShowEntryForm(true);
+    activeFields.forEach(f => { if (f.type === "Date" && !entry[f.id]) setForm(p => ({...p, [f.id]: TODAY()})); });
   };
 
-  // Split fields: date+notes go last, custom fields first
-  const dateNoteIds = new Set(["f_date", "f_notes"]);
-  const customFields   = activeFields.filter(f => !dateNoteIds.has(f.id));
-  const dateNoteFields = activeFields.filter(f => dateNoteIds.has(f.id));
-  const orderedFields  = [...customFields, ...dateNoteFields];
+  // Sorted current entries
+  const orderedFields = activeFields;
+  const dateId  = activeFields.find(f => f.type === "Date")?.id || "f_date";
+  const firstId = orderedFields[0]?.id;
 
-  const filtered = (() => {
-    let list = entries.filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()));
-    const firstId = orderedFields[0]?.id;
-    const dateId  = activeFields.find(f => f.type === "Date")?.id || "f_date";
-    list = [...list].sort((a, b) => {
-      switch (sortBy) {
-        case "date_asc":  return (a[dateId] || a.createdAt) < (b[dateId] || b.createdAt) ? -1 : 1;
-        case "date_desc": return (a[dateId] || a.createdAt) > (b[dateId] || b.createdAt) ? -1 : 1;
-        case "name_asc":  return (a[firstId] || "").localeCompare(b[firstId] || "");
-        case "name_desc": return (b[firstId] || "").localeCompare(a[firstId] || "");
-        case "newest":    return new Date(b.createdAt) - new Date(a.createdAt);
-        case "oldest":    return new Date(a.createdAt) - new Date(b.createdAt);
-        default:          return 0;
+  const filtered = [...entries]
+    .filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()))
+    .sort((a,b) => {
+      switch(sortBy) {
+        case "date_desc": return (a[dateId]||a.createdAt) > (b[dateId]||b.createdAt) ? -1 : 1;
+        case "date_asc":  return (a[dateId]||a.createdAt) < (b[dateId]||b.createdAt) ? -1 : 1;
+        case "name_asc":  return (a[firstId]||"").localeCompare(b[firstId]||"");
+        case "name_desc": return (b[firstId]||"").localeCompare(a[firstId]||"");
+        case "newest":    return new Date(b.createdAt)-new Date(a.createdAt);
+        default: return 0;
       }
     });
-    return list;
-  })();
-
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
+    <div style={{ paddingBottom: 80 }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"0.75rem" }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>👥 Customer Records</div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted }}>{entries.length} customer record{entries.length !== 1 ? "s" : ""}</div>
+          <div style={{ fontSize:18, fontWeight:700, color:"var(--text)" }}>👥 Customer Records</div>
+          <div style={{ fontSize:12, color:"var(--text-muted)" }}>
+            {entries.length} record{entries.length!==1?"s":""}{groups.length>0 ? ` · ${groups.length} archived group${groups.length!==1?"s":""}` : ""}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn btn-success btn-sm" onClick={() => setShowExport(true)}><Icon name="download" size={14} /> Export</button>
+        <div style={{ display:"flex", gap:6 }}>
+          <button className="btn btn-success btn-sm" onClick={() => setShowExport(true)}>
+            <Icon name="download" size={14} /> Export
+          </button>
+          <button className="btn btn-sm" onClick={() => setShowNewGroup(true)}
+            style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"6px 12px", borderRadius:8, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+            + New Group
+          </button>
         </div>
       </div>
 
-      {/* History — always visible */}
-      <SmartSearch value={search} onChange={setSearch} placeholder="Search entries…" resultCount={filtered.length} />
+      {/* Group tabs — current + all archived */}
+      {groups.length > 0 && (
+        <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:"0.75rem", paddingBottom:4, scrollbarWidth:"none" }}>
+          <div style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, background:"var(--primary)", color:"#fff", fontSize:12, fontWeight:700 }}>
+            📋 Current
+          </div>
+          {(groups||[]).map(grp => (
+            <div key={grp.id} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, background:"var(--surface)", border:"1px solid var(--border)", fontSize:12, fontWeight:600, color:"var(--text-muted)", whiteSpace:"nowrap" }}>
+              📁 {grp.name} ({grp.entries?.length||0})
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Sort dropdown */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
-        <label style={{ fontSize: 13, color: COLORS.textMuted, fontWeight: 600, flexShrink: 0 }}>Sort by:</label>
-        <select
-          value={sortBy}
-          onChange={e => setSortBy(e.target.value)}
-          className="form-input"
-          style={{ flex: 1, padding: "9px 12px", fontSize: 14 }}
-        >
+      {/* Fields setup prompt */}
+      {!fields && (
+        <div className="card" style={{ marginBottom:"0.75rem", textAlign:"center", padding:"1.5rem" }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>🛠️</div>
+          <div style={{ fontSize:14, fontWeight:700, color:"var(--text)", marginBottom:6 }}>Set up your record fields</div>
+          <div style={{ fontSize:12, color:"var(--text-muted)", marginBottom:14, lineHeight:1.6 }}>
+            Define the columns for this group (e.g. Customer Name, Product, Amount).
+          </div>
+          <button className="btn btn-primary" onClick={() => { setSetupMode(true); setShowEntryForm(true); }}>
+            ⚙️ Set Up Fields
+          </button>
+        </div>
+      )}
+
+      {/* Manage fields row */}
+      {fields && (
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:"0.6rem", flexWrap:"wrap" }}>
+          <div style={{ display:"flex", gap:4, flex:1, flexWrap:"wrap" }}>
+            {activeFields.filter(f=>f.id!=="f_notes").map(f=>(
+              <span key={f.id} style={{ background:"var(--bg)", border:"1px solid var(--border)", borderRadius:6, padding:"3px 8px", fontSize:11, fontWeight:600, color:"var(--text-muted)" }}>
+                {f.name}
+              </span>
+            ))}
+          </div>
+          <button onClick={() => { setDraftFields(activeFields.filter(f=>f.id!=="f_date"&&f.id!=="f_notes")); setShowManageFields(true); setShowEntryForm(true); }}
+            style={{ background:"none", border:"none", color:"var(--primary)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Inter',sans-serif", whiteSpace:"nowrap" }}>
+            ✏️ Edit fields
+          </button>
+        </div>
+      )}
+
+      {/* Search + sort */}
+      <SmartSearch value={search} onChange={setSearch} placeholder="Search records…" resultCount={filtered.length} />
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:"0.75rem" }}>
+        <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="form-input" style={{ flex:1, padding:"9px 12px", fontSize:13 }}>
           <option value="date_desc">📅 Newest date</option>
           <option value="date_asc">📅 Oldest date</option>
           <option value="name_asc">🔤 A → Z</option>
@@ -1537,41 +1886,89 @@ function SalesRepScreen({ user }) {
         </select>
       </div>
 
-      {filtered.length === 0 ? (
-        <div className="empty-state"><div class="empty-icon">👥</div><h3>No customer records yet</h3><p>Tap the + button to add your first record</p></div>
+      {/* Archived groups */}
+      {(groups||[]).map((grp) => {
+        const grpFiltered = (grp.entries||[]).filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()));
+        if (grpFiltered.length === 0 && search) return null;
+        const gFields = grp.fields || defaultFields;
+        const gFirst  = gFields[0];
+        return (
+          <div key={grp.id} style={{ marginBottom:"1rem" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                📁 {grp.name} · {grp.entries?.length||0} record{(grp.entries?.length||0)!==1?"s":""}
+              </div>
+              <button onClick={() => {
+                setGroups(prev => (prev||[]).filter(g => g.id !== grp.id));
+                showToast(`"${grp.name}" deleted`,"error");
+              }} style={{ background:"none", border:"none", color:COLORS.danger, fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
+                Delete group
+              </button>
+            </div>
+            <div className="card" style={{ padding:0, overflow:"hidden" }}>
+              {grpFiltered.slice(0,5).map((e,i) => (
+                <div key={e.id||i} style={{ padding:"10px 14px", borderBottom:i<Math.min(grpFiltered.length,5)-1?`0.5px solid var(--border)`:"none", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{gFirst?(e[gFirst.id]||"—"):"—"}</div>
+                    <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
+                      {gFields.slice(1,3).map(f=>e[f.id]).filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)" }}>{e.f_date||e.date||""}</div>
+                </div>
+              ))}
+              {grpFiltered.length>5 && (
+                <div style={{ padding:"8px 14px", fontSize:12, color:"var(--primary)", fontWeight:600 }}>+{grpFiltered.length-5} more records</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Current records header */}
+      {entries.length > 0 && groups.length > 0 && (
+        <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
+          📋 Current Records
+        </div>
+      )}
+
+      {/* Current entries list */}
+      {filtered.length === 0 && entries.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon">👥</div>
+          <h3>No records yet</h3>
+          <p>Tap + to add your first customer record</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state"><h3>No results</h3><p>Try a different search</p></div>
       ) : (
         <div className="card">
           {filtered.map(entry => {
-            const firstField = orderedFields[0];
-            const firstVal   = entry[firstField?.id];
-            const otherFields = orderedFields.slice(1).filter(f => entry[f.id] && f.id !== "f_notes");
+            const customFields = activeFields.filter(f => f.id !== "f_date" && f.id !== "f_notes");
+            const mainField = customFields[0] || activeFields[0];
+            const subField  = customFields[1] || activeFields[1];
+            const amtField  = customFields.find(f => f.type === "Number") || customFields[customFields.length-1];
+            const dateF     = activeFields.find(f => f.type === "Date") || { id:"f_date" };
             return (
-              <div key={entry.id} style={{ padding: "12px 0", borderBottom: `0.5px solid ${COLORS.border}` }}>
-                {/* First field — prominent headline */}
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <div style={{ width: 38, height: 38, borderRadius: 10, background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <span style={{ fontSize: 16 }}>👤</span>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {firstVal || <span style={{ color: COLORS.textLight, fontStyle: "italic" }}>No {firstField?.name}</span>}
-                    </div>
-                    <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
-                      {new Date(entry.createdAt).toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })}
-                    </div>
-                    {otherFields.length > 0 && (
-                      <div style={{ display: "flex", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
-                        {otherFields.slice(0, 2).map(f => (
-                          <span key={f.id} style={{ fontSize: 11, background: COLORS.bg, border: `0.5px solid ${COLORS.border}`, borderRadius: 6, padding: "2px 8px", color: COLORS.textMuted }}>
-                            {f.name}: <strong style={{ color: COLORS.text }}>{entry[f.id]}</strong>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                    <button className="btn btn-sm btn-outline" onClick={() => openEdit(entry)}><Icon name="edit" size={13} /></button>
-                    <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(entry.id)}><Icon name="trash" size={13} /></button>
+              <div key={entry.id} className="entry-row">
+                <div style={{ width:36, height:36, borderRadius:10, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, color:"var(--primary)", flexShrink:0 }}>
+                  {String(entry[mainField?.id]||"?")[0]?.toUpperCase()||"?"}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div className="entry-title">{entry[mainField?.id]||"—"}</div>
+                  <div className="entry-sub">{[entry[subField?.id], entry[dateF.id]].filter(Boolean).join(" · ")}</div>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
+                  {amtField && entry[amtField.id] && (
+                    <div className="entry-amount">{amtField.type==="Number"?NAIRA(entry[amtField.id]):entry[amtField.id]}</div>
+                  )}
+                  <div style={{ display:"flex", gap:4 }}>
+                    <button className="btn btn-sm" onClick={() => setViewEntry(entry)}
+                      style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"5px 9px", borderRadius:7, fontSize:12, fontWeight:700, cursor:"pointer" }}>
+                      View
+                    </button>
+                    <button className="btn btn-sm btn-outline" onClick={() => openEdit(entry)}><Icon name="edit" size={13}/></button>
+                    <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(entry.id)}><Icon name="trash" size={13}/></button>
                   </div>
                 </div>
               </div>
@@ -1581,230 +1978,191 @@ function SalesRepScreen({ user }) {
       )}
 
       {/* FAB */}
-      <button
-        onClick={openAdd}
-        title="New entry"
-        style={{
-          position: "fixed", bottom: "calc(28px + var(--fab-lift, 0px))", right: 28, zIndex: 200,
-          width: 56, height: 56, borderRadius: "50%",
-          background: COLORS.primary, color: "#fff", border: "none",
-          boxShadow: "0 4px 18px rgba(27,108,168,0.45)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.transform="scale(1.1)"; e.currentTarget.style.boxShadow="0 6px 24px rgba(27,108,168,0.55)"; }}
-        onMouseLeave={e => { e.currentTarget.style.transform="scale(1)";   e.currentTarget.style.boxShadow="0 4px 18px rgba(27,108,168,0.45)"; }}
-      >
+      <button onClick={() => { setShowEntryForm(true); setEditId(null); setForm({}); setErrors({}); setShowManageFields(false); setSetupMode(!fields); }}
+        style={{ position:"fixed", bottom:"calc(28px + var(--fab-lift,0px))", right:28, zIndex:200, width:56, height:56, borderRadius:"50%", background:"linear-gradient(135deg,#5B21B6,#7C3AED)", color:"#fff", border:"none", boxShadow:"0 4px 18px rgba(124,58,237,0.45)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
       </button>
 
-      {/* ── Field choice pop-up ── */}
-      {showFieldChoice && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 300,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: "rgba(0,0,0,0.45)",
-        }} onClick={() => setShowFieldChoice(false)}>
-          <div style={{
-            background: "#fff", borderRadius: 20, padding: "24px 20px",
-            width: "calc(100% - 48px)", maxWidth: 360,
-            boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
-            animation: "scaleIn 0.2s cubic-bezier(0.4,0,0.2,1)",
-          }} onClick={e => e.stopPropagation()}>
-
-            <div style={{ textAlign: "center", marginBottom: 20 }}>
-              <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: COLORS.text, marginBottom: 6 }}>New Entry</div>
-              <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                Would you like to keep your existing fields or start fresh with new ones?
-              </div>
+      {/* New Group modal */}
+      {showNewGroup && (
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setShowNewGroup(false)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:380, animation:"scaleIn 0.2s ease" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:17, fontWeight:800, color:"var(--text)", marginBottom:6 }}>📁 Start New Group</div>
+            <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:16, lineHeight:1.6 }}>
+              Current records ({entries.length}) will be archived under the name you give them. You'll start fresh with a new set of fields.
             </div>
-
-            {/* Current fields preview */}
-            <div style={{ background: COLORS.bg, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Current fields</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {activeFields.map(f => (
-                  <span key={f.id} style={{ fontSize: 11, fontWeight: 600, background: COLORS.primaryLight, color: COLORS.primary, border: `1px solid ${COLORS.primary}30`, borderRadius: 6, padding: "3px 9px" }}>
-                    {f.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <button onClick={proceedWithExistingFields} style={{
-                padding: "13px", border: "none", borderRadius: 12, cursor: "pointer",
-                background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.primaryDark})`,
-                color: "#fff", fontWeight: 700, fontSize: 14,
-                fontFamily: "'Inter', sans-serif",
-                boxShadow: "0 3px 10px rgba(37,99,235,0.3)",
-              }}>
-                ✅ Keep current fields
-              </button>
-              <button onClick={proceedWithNewFields} style={{
-                padding: "13px", border: `1.5px solid ${COLORS.border}`, borderRadius: 12, cursor: "pointer",
-                background: "#fff", color: COLORS.text, fontWeight: 600, fontSize: 14,
-                fontFamily: "'Inter', sans-serif",
-              }}>
-                🔄 Reset & create new fields
+            <label className="form-label">Name for the current group</label>
+            <input className="form-input" placeholder={`e.g. Jan 2026 Sales, Old Customers…`}
+              value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+              onKeyDown={e => e.key==="Enter" && createNewGroup()} autoFocus style={{ marginBottom:16 }}/>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setShowNewGroup(false)}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={createNewGroup}>
+                📁 Archive & Start New
               </button>
             </div>
-
-            <button onClick={() => setShowFieldChoice(false)} style={{
-              width: "100%", marginTop: 12, background: "none", border: "none",
-              fontSize: 13, color: COLORS.textMuted, cursor: "pointer",
-              fontFamily: "'Inter', sans-serif", padding: "6px",
-            }}>Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Entry modal — centred, scrollable, never overflows screen */}
+      {/* Entry / Fields form bottom sheet */}
       {showEntryForm && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 300,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          padding: "16px",
-          background: "rgba(0,0,0,0.5)",
-        }} onClick={() => { setShowEntryForm(false); setShowManageFields(false); }}>
-          <div style={{
-            background: "#fff", borderRadius: 20,
-            padding: "0 0 4px",
-            width: "100%", maxWidth: 420,
-            maxHeight: "calc(100vh - 32px)",
-            display: "flex", flexDirection: "column",
-            boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-            animation: "scaleIn 0.22s cubic-bezier(0.4,0,0.2,1)",
-          }} onClick={e => e.stopPropagation()}>
-
-            {/* Sticky header */}
-            <div style={{ padding: "16px 18px 12px", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 10, background: COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>👤</div>
-                  <div style={{ fontSize: 17, fontWeight: 700 }}>{editId ? "Edit Record" : "New Customer Record"}</div>
-                </div>
-                <button onClick={() => { setShowEntryForm(false); setShowManageFields(false); setEditId(null); setForm({}); }} style={{ background: COLORS.bg, border: "none", cursor: "pointer", color: COLORS.textMuted, width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>×</button>
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          onClick={() => { setShowEntryForm(false); setSetupMode(false); setShowManageFields(false); setEditId(null); setForm({}); }}>
+          <div style={{ background:"var(--surface)", borderRadius:"22px 22px 0 0", width:"100%", maxWidth:520, maxHeight:"88vh", overflow:"hidden", display:"flex", flexDirection:"column" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:"18px 18px 10px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ fontSize:16, fontWeight:800, color:"var(--text)" }}>
+                {setupMode ? "⚙️ Set Up Fields" : showManageFields ? "✏️ Edit Fields" : editId ? "Edit Record" : "New Record"}
               </div>
+              <button onClick={() => { setShowEntryForm(false); setSetupMode(false); setShowManageFields(false); setEditId(null); setForm({}); }}
+                style={{ background:"var(--bg)", border:"none", width:30, height:30, borderRadius:"50%", cursor:"pointer", fontSize:18, color:"var(--text-muted)" }}>×</button>
             </div>
 
-            {/* Scrollable body */}
-            <div style={{ overflowY: "auto", padding: "16px 18px", flex: 1, WebkitOverflowScrolling: "touch" }}>
-
-            {editId && <div style={{ background: COLORS.amberLight, color: COLORS.amber, borderRadius: 8, padding: "7px 12px", fontSize: 12, marginBottom: 12, fontWeight: 500 }}>Editing existing entry</div>}
-
-            {/* First-time setup prompt if no custom fields yet */}
-            {!fields && !showManageFields && (
-              <div style={{ background: COLORS.primaryLight, border: `1px solid ${COLORS.primary}30`, borderRadius: 12, padding: "12px 14px", marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
-                <span style={{ fontSize: 20 }}>💡</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.primary }}>Customise your fields</div>
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>Date & Notes are included by default. Add custom fields for your business.</div>
-                </div>
-                <button onClick={() => setShowManageFields(true)} style={{ background: COLORS.primary, color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap" }}>Add Fields</button>
-              </div>
-            )}
-
-            {/* Entry fields */}
-            {orderedFields.map((field, i) => renderField(field, i === 0))}
-
-            {/* ── Manage fields section (collapsible) ── */}
-            <div style={{ marginTop: 8 }}>
-              <button onClick={() => setShowManageFields(v => !v)} style={{
-                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "10px 14px", background: COLORS.bg, border: `1px solid ${COLORS.border}`,
-                borderRadius: showManageFields ? "10px 10px 0 0" : 10,
-                cursor: "pointer", fontFamily: "'Inter', sans-serif",
-                fontSize: 13, fontWeight: 600, color: COLORS.textMuted,
-              }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <Icon name="settings" size={14} /> Manage fields
-                </span>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transition: "transform 0.2s", transform: showManageFields ? "rotate(180deg)" : "rotate(0deg)" }}><path d="M6 9l6 6 6-6"/></svg>
-              </button>
-
-              {showManageFields && (
-                <div style={{ border: `1px solid ${COLORS.border}`, borderTop: "none", borderRadius: "0 0 10px 10px", padding: "14px", background: "#fff" }}>
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 10 }}>
-                    Default fields (Date, Notes) are always included. Add your own below.
+            <div style={{ flex:1, overflowY:"auto", padding:"14px 18px" }}>
+              {(setupMode || showManageFields) ? (
+                <div>
+                  <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14, lineHeight:1.6 }}>
+                    Define the columns for this group. Date and Notes are always included.
                   </div>
-
-                  {/* Existing custom fields */}
-                  {draftFields.length === 0 && (fields || []).filter(f => !["f_date","f_notes"].includes(f.id)).length === 0 && (
-                    <div style={{ fontSize: 12, color: COLORS.textLight, fontStyle: "italic", marginBottom: 8 }}>No custom fields yet</div>
-                  )}
-
-                  {/* Show current saved custom fields */}
-                  {(fields || []).filter(f => !["f_date","f_notes"].includes(f.id)).map(f => (
-                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, padding: "7px 10px", background: COLORS.bg, borderRadius: 8 }}>
-                      <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{f.name}</span>
-                      <span className="pill pill-blue" style={{ fontSize: 10 }}>{f.type}</span>
-                    </div>
-                  ))}
-
-                  {/* Draft new fields */}
-                  {draftFields.map((f, i) => (
-                    <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-                      <input className="form-input" placeholder="Field name" value={f.name}
-                        onChange={e => setDraftFields(prev => prev.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
-                        style={{ flex: 1 }} />
-                      <select className="form-input" style={{ width: 100, flexShrink: 0 }} value={f.type}
-                        onChange={e => setDraftFields(prev => prev.map((x, j) => j === i ? { ...x, type: e.target.value } : x))}>
+                  {draftFields.map((f,i) => (
+                    <div key={f.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
+                      <input className="form-input" style={{ flex:1 }} placeholder={`Field name`}
+                        value={f.name} onChange={e => setDraftFields(prev => prev.map((x,j)=>j===i?{...x,name:e.target.value}:x))} />
+                      <select className="form-input" style={{ width:90 }} value={f.type}
+                        onChange={e => setDraftFields(prev => prev.map((x,j)=>j===i?{...x,type:e.target.value}:x))}>
                         <option>Text</option><option>Number</option><option>Date</option><option>Yes/No</option>
                       </select>
-                      <button className="btn btn-danger btn-sm" onClick={() => setDraftFields(prev => prev.filter((_, j) => j !== i))}><Icon name="trash" size={13} /></button>
+                      <button className="btn btn-danger btn-sm" onClick={()=>setDraftFields(prev=>prev.filter((_,j)=>j!==i))}><Icon name="trash" size={13}/></button>
                     </div>
                   ))}
-
-                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                    <button className="btn btn-outline btn-sm" style={{ flex: 1 }}
-                      onClick={() => setDraftFields(prev => [...prev, { id: uid(), name: "", type: "Text" }])}>
-                      <Icon name="plus" size={13} /> New field
-                    </button>
-                    {draftFields.length > 0 && (
-                      <button className="btn btn-sm" style={{ flex: 1, background: COLORS.accent, color: "#fff" }}
-                        onClick={() => {
-                          const combined = [...(fields || defaultFields), ...draftFields.filter(f => f.name.trim())];
-                          setFields(combined);
-                          setDraftFields([]);
-                          setShowManageFields(false);
-                          showToast("Fields saved!");
-                        }}>
-                        Save fields
-                      </button>
-                    )}
-                  </div>
+                  <button className="btn btn-outline btn-sm" style={{ width:"100%", marginTop:4 }}
+                    onClick={()=>setDraftFields(prev=>[...prev,{id:uid(),name:"",type:"Text"}])}>
+                    <Icon name="plus" size={13}/> Add field
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  {activeFields.map(f => (
+                    <div key={f.id} className="form-group">
+                      <label className="form-label">{f.name}</label>
+                      {f.type === "Date" ? (
+                        <input type="date" className={`form-input${errors[f.id]?" error":""}`}
+                          value={form[f.id]||TODAY()} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                      ) : f.type === "Number" ? (
+                        <input type="number" className={`form-input${errors[f.id]?" error":""}`} placeholder="0"
+                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                      ) : f.type === "Yes/No" ? (
+                        <select className="form-input" value={form[f.id]||""}
+                          onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}}>
+                          <option value="">Select</option><option>Yes</option><option>No</option>
+                        </select>
+                      ) : (
+                        <input className={`form-input${errors[f.id]?" error":""}`} placeholder={`Enter ${f.name}`}
+                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                      )}
+                      {errors[f.id] && <div className="form-error">{errors[f.id]}</div>}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
-            </div>{/* end scrollable body */}
-
-            {/* Sticky footer with action buttons */}
-            <div style={{ padding: "12px 18px 16px", borderTop: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", gap: 10 }}>
-              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => { setShowEntryForm(false); setShowManageFields(false); setEditId(null); setForm({}); }}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => { saveEntry(); }}>{editId ? "Update Record" : "Save Record"}</button>
+            <div style={{ padding:"12px 18px 20px", borderTop:`1px solid var(--border)`, flexShrink:0, display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>{setShowEntryForm(false);setSetupMode(false);setShowManageFields(false);setEditId(null);setForm({});}}>Cancel</button>
+              {(setupMode||showManageFields) ? (
+                <button className="btn btn-primary" style={{ flex:2 }}
+                  onClick={() => {
+                    const combined = [...defaultFields, ...draftFields.filter(f=>f.name.trim())];
+                    saveCurrentFields(combined);
+                  }}>
+                  💾 Save Fields
+                </button>
+              ) : (
+                <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={saveEntry}>
+                  {editId ? "✅ Update" : "💾 Save Record"}
+                </button>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+      {/* View Record modal */}
+      {viewEntry && (
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setViewEntry(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:24, width:"100%", maxWidth:480, maxHeight:"80vh", overflow:"hidden", display:"flex", flexDirection:"column", boxShadow:"0 24px 60px rgba(0,0,0,0.3)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding:"20px 20px 14px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>👤</div>
+                <div>
+                  <div style={{ fontSize:17, fontWeight:800, color:"var(--text)" }}>{viewEntry[orderedFields[0]?.id]||"Record"}</div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>Added {new Date(viewEntry.createdAt).toLocaleDateString("en-NG",{day:"numeric",month:"short",year:"numeric"})}</div>
+                </div>
+              </div>
+              <button onClick={()=>setViewEntry(null)} style={{ background:"var(--bg)", border:"none", width:32, height:32, borderRadius:"50%", cursor:"pointer", fontSize:18, color:"var(--text-muted)" }}>×</button>
+            </div>
+            <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
+              {orderedFields.map((f,i) => {
+                const val = viewEntry[f.id];
+                if(!val && val!==0) return null;
+                return (
+                  <div key={f.id} style={{ marginBottom:14, paddingBottom:14, borderBottom:i<orderedFields.length-1?`0.5px solid var(--border)`:"none" }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>{f.name}</div>
+                    <div style={{ fontSize:15, fontWeight:600, color:"var(--text)", lineHeight:1.5, wordBreak:"break-word" }}>{val}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ padding:"12px 20px 20px", borderTop:`1px solid var(--border)`, display:"flex", gap:10, flexShrink:0 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>setViewEntry(null)}>Close</button>
+              <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={()=>{openEdit(viewEntry);setViewEntry(null);}}>✏️ Edit Record</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)} />}
+
+      {/* Export — each group as a separate sheet */}
       {showExport && (
         <ExportModal
-          title="Sales Data"
+          title="Customer Records"
           onClose={() => setShowExport(false)}
           onExcelExport={() => {
-            const headers = activeFields.map(f => f.name);
-            const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
-            exportToExcel("Sales_Data_" + TODAY(), "Sales", rows, headers);
-            setShowExport(false); showToast("Excel file downloaded!");
+            try {
+              const wb = XLSX.utils.book_new();
+              // Current records sheet
+              if (entries.length > 0) {
+                const headers = activeFields.map(f => f.name);
+                const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
+                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                XLSX.utils.book_append_sheet(wb, ws, "Current Records");
+              }
+              // Archived group sheets
+              (groups||[]).forEach(grp => {
+                if (!grp.entries?.length) return;
+                const gFields = grp.fields || defaultFields;
+                const headers = gFields.map(f => f.name);
+                const rows = grp.entries.map(e => gFields.map(f => e[f.id] || ""));
+                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                const sheetName = (grp.name||"Group").slice(0,31).replace(/[^a-zA-Z0-9 _-]/g,"").slice(0,31);
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+              });
+              if (wb.SheetNames.length === 0) { showToast("No data to export","error"); return; }
+              XLSX.writeFile(wb, `CustomerRecords_${TODAY()}.xlsx`);
+              setShowExport(false); showToast("Excel downloaded — each group is a separate sheet!");
+            } catch(e) { showToast("Export failed: " + e.message, "error"); }
           }}
           onPDFExport={() => {
+            // Export current group only for PDF
             const headers = activeFields.map(f => f.name);
             const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
-            exportToPDF("Sales Rep — Data Export", headers, rows, "Sales_Data");
+            exportToPDF("Customer Records — Current Group", headers, rows, "CustomerRecords");
             setShowExport(false);
           }}
         />
@@ -2514,6 +2872,21 @@ function ShopScreen({ user }) {
         </div>
       )}
 
+      {confirmDeleteFarm && (
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setConfirmDeleteFarm(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:340 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:18, fontWeight:800, color:"var(--text)", marginBottom:8 }}>🗑️ Delete Farm?</div>
+            <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              This will permanently delete the farm and all its expense records. This cannot be undone.
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setConfirmDeleteFarm(null)}>Cancel</button>
+              <button className="btn btn-danger" style={{ flex:1, fontWeight:800 }} onClick={() => doDeleteFarm(confirmDeleteFarm)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
       {showExport && (
         <ExportModal
@@ -2541,17 +2914,10 @@ function ShopScreen({ user }) {
 const FARM_CATS = ["Seeds", "Fertilizer", "Labor", "Transport", "Equipment", "Others"];
 
 function FarmScreen({ user }) {
-  // ── Farm green palette ──
   const FG = {
-    dark:    "#1B4332",
-    main:    "#2D6A4F",
-    mid:     "#40916C",
-    light:   "#74C69D",
-    pale:    "#D8F3DC",
-    surface: "#F0FAF4",
-    border:  "#B7E4C7",
+    dark: "#1B4332", main: "#2D6A4F", mid: "#40916C",
+    light: "#74C69D", pale: "#D8F3DC", surface: "#F0FAF4", border: "#B7E4C7",
   };
-
   const catMeta = {
     Seeds:      { icon: "🌱", bg: "#E9F5DB", color: "#386641" },
     Fertilizer: { icon: "🧪", bg: "#EAF4FB", color: "#1B6CA8" },
@@ -2561,201 +2927,247 @@ function FarmScreen({ user }) {
     Others:     { icon: "📦", bg: "#F4F6FA", color: "#6B7280" },
   };
 
-  const key = `sl_farm_${user.uid}`;
-  const [expenses, setExpenses] = useLocalState(key, []);
-  const [form, setForm] = useState({ date: TODAY(), desc: "", amount: "", category: "" });
+  //    Multi-farm: farms list stored separately   
+  const farmsKey    = `sl_farms_${user.uid}`;
+  const expKey      = (fid) => `sl_farm_${user.uid}_${fid}`;
+  const legacyKey   = `sl_farm_${user.uid}`;  // old single-farm key
+
+  const [farms, setFarms]   = useLocalState(farmsKey, null);
+  const [activeFarm, setActiveFarm] = useState(null);
+  const [expenses, setExpenses]     = useState([]);
+  const [showFarmMgr, setShowFarmMgr] = useState(false);
+  const [newFarmName, setNewFarmName] = useState("");
+  const [form, setForm]     = useState({ date: TODAY(), desc: "", amount: "", category: "Others" });
   const [errors, setErrors] = useState({});
   const [search, setSearch] = useState("");
-  const [toast, setToast] = useState(null);
-  const [showForm, setShowForm] = useState(false);
+  const [toast, setToast]   = useState(null);
+  const [showForm, setShowForm]   = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [filterCat, setFilterCat] = useState("All");
 
   const showToast = (msg, type = "success") => setToast({ msg, type });
 
-  const now = new Date();
-  const thisMonth = expenses.filter(e => e.date.startsWith(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`));
-  const thisYear  = expenses.filter(e => e.date.startsWith(`${now.getFullYear()}`));
+  //    Migrate legacy single-farm data on first load   
+  useEffect(() => {
+    let initialFarms = farms;
+    if (!initialFarms) {
+      // First time   check if there's legacy data
+      const legacyData = (() => { try { return JSON.parse(localStorage.getItem(legacyKey)) || []; } catch { return []; } })();
+      const firstFarm = { id: uid(), name: "My Farm", createdAt: TS() };
+      initialFarms = [firstFarm];
+      setFarms(initialFarms);
+      if (legacyData.length > 0) {
+        // Migrate old data to new farm-specific key
+        localStorage.setItem(expKey(firstFarm.id), JSON.stringify(legacyData));
+      }
+    }
+    if (initialFarms.length > 0 && !activeFarm) {
+      setActiveFarm(initialFarms[0].id);
+    }
+  }, []);
+
+  //    Load expenses when active farm changes   
+  useEffect(() => {
+    if (!activeFarm) return;
+    const raw = (() => { try { return JSON.parse(localStorage.getItem(expKey(activeFarm))) || []; } catch { return []; } })();
+    setExpenses(raw);
+  }, [activeFarm]);
+
+  //    Persist expenses to localStorage whenever they change   
+  useEffect(() => {
+    if (!activeFarm) return;
+    localStorage.setItem(expKey(activeFarm), JSON.stringify(expenses));
+    // Also write to legacy key for backward compat with sync
+    const allExp = (farms || []).flatMap(f => {
+      const k = expKey(f.id);
+      try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; }
+    });
+    localStorage.setItem(legacyKey, JSON.stringify(allExp));
+  }, [expenses, activeFarm]);
+
+  const addFarm = () => {
+    const name = newFarmName.trim();
+    if (!name) return;
+    const newF = { id: uid(), name, createdAt: TS() };
+    const updated = [...(farms || []), newF];
+    setFarms(updated);
+    setActiveFarm(newF.id);
+    setNewFarmName("");
+    setShowFarmMgr(false);
+    showToast(`"${name}" farm created!`);
+  };
+
+  const [confirmDeleteFarm, setConfirmDeleteFarm] = useState(null);
+  const deleteFarm = (fid) => {
+    if ((farms || []).length <= 1) { showToast("Cannot delete your only farm", "error"); return; }
+    setConfirmDeleteFarm(fid); // show confirm modal
+  };
+  const doDeleteFarm = (fid) => {
+    localStorage.removeItem(expKey(fid));
+    const updated = (farms || []).filter(f => f.id !== fid);
+    setFarms(updated);
+    setActiveFarm(updated[0]?.id || null);
+    setConfirmDeleteFarm(null);
+    showToast("Farm deleted", "error");
+  };
 
   const saveExpense = () => {
     const e = {};
     if (!form.desc.trim()) e.desc = "Description is required";
     if (!form.amount || isNaN(form.amount) || parseFloat(form.amount) <= 0) e.amount = "Enter a valid amount";
     if (Object.keys(e).length) { setErrors(e); return; }
-    const exp = { id: uid(), ...form, amount: parseFloat(form.amount), createdAt: TS() };
+    const exp = { id: uid(), ...form, amount: parseFloat(form.amount), farmId: activeFarm, createdAt: TS() };
     setExpenses(prev => [exp, ...prev]);
-    setForm({ date: TODAY(), desc: "", amount: "", category: "" });
+    setForm({ date: TODAY(), desc: "", amount: "", category: form.category });
     setErrors({});
     setShowForm(false);
-    showToast("Expenditure saved!");
+    showToast("Expense saved!");
   };
 
-  const deleteExpense = (id) => { setExpenses(prev => prev.filter(e => e.id !== id)); showToast("Deleted", "error"); };
+  const deleteExpense = (id) => {
+    setExpenses(prev => prev.filter(e => e.id !== id));
+    showToast("Deleted", "error");
+  };
 
+  const currentFarm = (farms || []).find(f => f.id === activeFarm);
   const filtered = expenses.filter(e => {
     const matchSearch = !search || e.desc.toLowerCase().includes(search.toLowerCase()) || e.date.includes(search);
-    const matchCat = filterCat === "All" || e.category === filterCat;
+    const matchCat    = filterCat === "All" || e.category === filterCat;
     return matchSearch && matchCat;
   });
 
+  const totalSpend = expenses.reduce((a, e) => a + e.amount, 0);
+  const now        = new Date();
+  const thisMonth  = expenses.filter(e => e.date.startsWith(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`));
+  const monthTotal = thisMonth.reduce((a, e) => a + e.amount, 0);
+
+  const byCategory = Object.entries(
+    expenses.reduce((acc, e) => { const c = e.category || "Others"; acc[c] = (acc[c] || 0) + e.amount; return acc; }, {})
+  ).sort((a, b) => b[1] - a[1]);
+
   return (
-    <div style={{ background: FG.surface, minHeight: "100%" }}>
+    <div style={{ background: "var(--bg)", minHeight: "100%", paddingBottom: 16 }}>
+
+      {/* ── Farm selector bar ── */}
+      <div style={{ marginBottom: "0.85rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, overflowX: "auto", paddingBottom: 4, scrollbarWidth: "none" }}>
+          {(farms || []).map(f => (
+            <button key={f.id} onClick={() => { setActiveFarm(f.id); setSearch(""); setFilterCat("All"); }}
+              style={{
+                flexShrink: 0, padding: "8px 16px", borderRadius: 20, border: "none", cursor: "pointer",
+                fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 700,
+                background: activeFarm === f.id ? `linear-gradient(135deg, ${FG.dark}, ${FG.main})` : "var(--surface)",
+                color: activeFarm === f.id ? "#fff" : "var(--text)",
+                boxShadow: activeFarm === f.id ? `0 3px 12px ${FG.main}55` : "none",
+                border: activeFarm !== f.id ? `1px solid var(--border)` : "none",
+              }}>
+              🌾 {f.name}
+            </button>
+          ))}
+          <button onClick={() => setShowFarmMgr(true)}
+            style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 20, border: `1.5px dashed ${FG.mid}`, background: "transparent", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 700, color: FG.mid, whiteSpace: "nowrap" }}>
+            + Add Farm
+          </button>
+        </div>
+      </div>
+
       {/* ── Hero banner ── */}
       <div style={{
         background: `linear-gradient(135deg, ${FG.dark} 0%, ${FG.main} 60%, ${FG.mid} 100%)`,
-        borderRadius: 18, padding: "20px 20px 16px", marginBottom: "1rem",
+        borderRadius: 18, padding: "18px 18px 14px", marginBottom: "1rem",
         position: "relative", overflow: "hidden",
       }}>
-        {/* decorative circles */}
         <div style={{ position: "absolute", top: -20, right: -20, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.06)" }} />
-        <div style={{ position: "absolute", bottom: -30, right: 30, width: 70, height: 70, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
           <div>
-            <div style={{ fontSize: 28, marginBottom: 4 }}>🌾</div>
-            <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", letterSpacing: "-0.3px" }}>Farming Expenditures</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)", marginTop: 2 }}>{expenses.length} entries recorded</div>
+            <div style={{ fontSize: 22, marginBottom: 2 }}>🌾</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>{currentFarm?.name || "Farm"} Expenses</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 3 }}>
+              {expenses.length} records · {NAIRA(totalSpend)} total
+            </div>
           </div>
-          <button onClick={() => setShowExport(true)} style={{
-            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)",
-            borderRadius: 10, padding: "7px 12px", color: "#fff", fontSize: 12,
-            cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
-            fontFamily: "'Inter', sans-serif", fontWeight: 600,
-          }}>
-            <Icon name="download" size={13} /> Export
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setShowExport(true)} style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 10, padding: "7px 12px", color: "#fff", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 700 }}>
+              📤 Export
+            </button>
+            <button onClick={() => deleteFarm(activeFarm)} style={{ background: "rgba(255,80,80,0.2)", border: "none", borderRadius: 10, padding: "7px 10px", color: "#FCA5A5", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 700 }}>
+              🗑️
+            </button>
+          </div>
         </div>
-        {/* stat row inside banner */}
+        {/* Month stat */}
         <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
           {[
-            { label: "This Month", value: NAIRA(thisMonth.reduce((a, e) => a + e.amount, 0)), sub: `${thisMonth.length} entries` },
-            { label: "This Year",  value: NAIRA(thisYear.reduce((a, e) => a + e.amount, 0)),  sub: `${thisYear.length} entries` },
+            { label: "This Month", value: NAIRA(monthTotal) },
+            { label: "All Time", value: NAIRA(totalSpend) },
+            { label: "Records", value: expenses.length },
           ].map(s => (
-            <div key={s.label} style={{ flex: 1, background: "rgba(255,255,255,0.12)", borderRadius: 12, padding: "10px 12px", backdropFilter: "blur(4px)" }}>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</div>
-              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, fontWeight: 700, color: "#fff", marginTop: 3 }}>{s.value}</div>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginTop: 1 }}>{s.sub}</div>
+            <div key={s.label} style={{ flex: 1, background: "rgba(255,255,255,0.12)", borderRadius: 10, padding: "8px 10px" }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{s.value}</div>
+              <div style={{ fontSize: 9, color: "rgba(255,255,255,0.65)", marginTop: 2 }}>{s.label}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* ── Expense category breakdown ── */}
-      {expenses.length > 0 && (() => {
-        const catTotals = {};
-        expenses.forEach(e => {
-          const c = e.category || "Others";
-          catTotals[c] = (catTotals[c] || 0) + e.amount;
-        });
-        const total = Object.values(catTotals).reduce((a,v) => a+v, 0);
-        const sorted = Object.entries(catTotals).sort((a,b) => b[1]-a[1]);
-        const icons = { Seeds:"🌱", Fertilizer:"🧪", Labor:"👷", Transport:"🚛", Equipment:"⚙️", Others:"📦" };
-        return (
-          <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 14, padding: "12px 14px", marginBottom: "0.75rem", color: "#fff" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.65, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Spend by Category</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              {sorted.slice(0,4).map(([cat, amt]) => (
-                <div key={cat}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.9 }}>{icons[cat]||"📦"} {cat}</span>
-                    <span style={{ fontSize: 11, fontFamily: "'Space Mono', monospace", opacity: 0.85 }}>{NAIRA(amt)} · {Math.round(amt/total*100)}%</span>
-                  </div>
-                  <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", borderRadius: 2, background: "rgba(255,255,255,0.6)", width: `${amt/total*100}%`, transition: "width 0.5s" }} />
-                  </div>
+      {/* ── Category breakdown ── */}
+      {byCategory.length > 0 && (
+        <div className="card" style={{ marginBottom: "0.75rem" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 10 }}>Spend by Category</div>
+          {byCategory.map(([cat, amt]) => {
+            const meta = catMeta[cat] || catMeta.Others;
+            const pct  = totalSpend > 0 ? (amt / totalSpend * 100) : 0;
+            return (
+              <div key={cat} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{meta.icon} {cat}</span>
+                  <span style={{ fontSize: 12, fontFamily: "'Space Mono', monospace", color: meta.color, fontWeight: 700 }}>{NAIRA(amt)}</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
+                <div style={{ height: 6, background: "var(--border)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: meta.color, borderRadius: 3, transition: "width 0.5s" }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {/* ── Category filter chips ── */}
-      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: "0.75rem", scrollbarWidth: "none" }}>
-        {["All", ...FARM_CATS].map(cat => {
-          const meta = catMeta[cat];
-          const active = filterCat === cat;
-          return (
-            <button key={cat} onClick={() => setFilterCat(cat)} style={{
-              flexShrink: 0, padding: "6px 12px", borderRadius: 20,
-              border: `1.5px solid ${active ? FG.main : FG.border}`,
-              background: active ? FG.main : "#fff",
-              color: active ? "#fff" : FG.main,
-              fontSize: 12, fontWeight: 600, cursor: "pointer",
-              fontFamily: "'Inter', sans-serif", display: "flex", alignItems: "center", gap: 5,
-              transition: "all 0.15s",
+      {/* ── Search + filter ── */}
+      <SmartSearch value={search} onChange={setSearch} placeholder="Search expenses…" resultCount={filtered.length} />
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: "0.75rem", paddingBottom: 4, scrollbarWidth: "none" }}>
+        {["All", ...Object.keys(catMeta)].map(c => (
+          <button key={c} onClick={() => setFilterCat(c)}
+            style={{ flexShrink: 0, padding: "5px 12px", borderRadius: 16, border: "none", cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 600,
+              background: filterCat === c ? FG.main : "var(--surface)",
+              color: filterCat === c ? "#fff" : "var(--text-muted)",
+              border: filterCat !== c ? `1px solid var(--border)` : "none",
             }}>
-              {meta && <span>{meta.icon}</span>}
-              {cat}
-            </button>
-          );
-        })}
+            {c === "All" ? "All" : `${catMeta[c]?.icon} ${c}`}
+          </button>
+        ))}
       </div>
 
-      {/* ── Search ── */}
-      <div style={{ position: "relative", marginBottom: "0.75rem" }}>
-        <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: FG.mid }}>
-          <Icon name="search" size={16} />
-        </span>
-        <input
-          style={{
-            width: "100%", padding: "10px 12px 10px 38px", borderRadius: 12,
-            border: `1.5px solid ${FG.border}`, background: "#fff",
-            fontSize: 13, fontFamily: "'Inter', sans-serif", outline: "none",
-            color: COLORS.text,
-          }}
-          placeholder="Search expenditures…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
-
-      {/* ── Expenses list ── */}
+      {/* ── Expense list ── */}
       {filtered.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "3rem 1rem" }}>
-          <div style={{ fontSize: 52, marginBottom: 12 }}>🌱</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: FG.dark, marginBottom: 6 }}>No expenditures yet</div>
-          <div style={{ fontSize: 13, color: COLORS.textMuted }}>Tap the + button below to log your first one</div>
+        <div className="empty-state">
+          <div className="empty-icon">🌾</div>
+          <h3>{expenses.length === 0 ? "No expenses yet" : "No results"}</h3>
+          <p>{expenses.length === 0 ? `Tap + to add your first expense for ${currentFarm?.name}` : "Try a different filter"}</p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {filtered.map(exp => {
-            const meta = catMeta[exp.category] || catMeta["Others"];
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          {filtered.map((exp, i) => {
+            const meta = catMeta[exp.category || "Others"] || catMeta.Others;
             return (
-              <div key={exp.id} style={{
-                background: "#fff", borderRadius: 14,
-                border: `1.5px solid ${FG.border}`,
-                overflow: "hidden",
-                boxShadow: "0 1px 4px rgba(45,106,79,0.07)",
-              }}>
-                <div style={{ height: 3, background: `linear-gradient(90deg, ${FG.mid}, ${FG.light})` }} />
-                <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{
-                    width: 40, height: 40, borderRadius: 11, flexShrink: 0,
-                    background: meta.bg, border: `1.5px solid ${FG.border}`,
-                    display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18,
-                  }}>
-                    {meta.icon}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: FG.dark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.desc}</div>
-                    <div style={{ display: "flex", gap: 6, marginTop: 3, alignItems: "center" }}>
-                      <span style={{ fontSize: 11, color: FG.mid }}>📅 {exp.date}</span>
-                      {exp.category && (
-                        <span style={{ fontSize: 10, fontWeight: 700, color: meta.color, background: meta.bg, border: `1px solid ${meta.color}30`, borderRadius: 6, padding: "1px 7px" }}>
-                          {exp.category}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, fontWeight: 700, color: FG.dark }}>{NAIRA(exp.amount)}</div>
-                    <button onClick={() => deleteExpense(exp.id)} style={{
-                      marginTop: 4, background: "none", border: "none", cursor: "pointer",
-                      color: COLORS.danger, opacity: 0.7, padding: "2px 4px",
-                    }}>
-                      <Icon name="trash" size={13} />
-                    </button>
-                  </div>
+              <div key={exp.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < filtered.length - 1 ? `0.5px solid var(--border)` : "none" }}>
+                <div style={{ width: 38, height: 38, borderRadius: 10, background: meta.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{meta.icon}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.desc}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{exp.date} · {exp.category || "Others"}</div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 800, fontFamily: "'Space Mono', monospace", color: COLORS.danger }}>{NAIRA(exp.amount)}</div>
+                  <button onClick={() => deleteExpense(exp.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 11, marginTop: 2, fontFamily: "'Inter', sans-serif" }}>Delete</button>
                 </div>
               </div>
             );
@@ -2764,136 +3176,130 @@ function FarmScreen({ user }) {
       )}
 
       {/* ── FAB ── */}
-      <button
-        onClick={() => { setForm({ date: TODAY(), desc: "", amount: "", category: "" }); setErrors({}); setShowForm(true); }}
-        title="Add expenditure"
-        style={{
-          position: "fixed", bottom: "calc(28px + var(--fab-lift, 0px))", right: 28, zIndex: 200,
-          width: 56, height: 56, borderRadius: "50%",
-          background: `linear-gradient(135deg, ${FG.main}, ${FG.mid})`,
-          color: "#fff", border: "none",
-          boxShadow: `0 4px 18px ${FG.main}88`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.transform="scale(1.1)"; }}
-        onMouseLeave={e => { e.currentTarget.style.transform="scale(1)"; }}
-      >
+      <button onClick={() => setShowForm(true)} style={{
+        position: "fixed", bottom: "calc(28px + var(--fab-lift, 0px))", right: 28, zIndex: 200,
+        width: 56, height: 56, borderRadius: "50%",
+        background: `linear-gradient(135deg, ${FG.dark}, ${FG.mid})`,
+        color: "#fff", border: "none",
+        boxShadow: `0 4px 18px ${FG.main}66`,
+        display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+      }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
       </button>
 
-      {/* ── Add Expenditure centred modal ── */}
-      {showForm && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 300,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          padding: 16, background: "rgba(0,0,0,0.5)",
-        }} onClick={() => setShowForm(false)}>
-          <div style={{
-            background: "#fff", borderRadius: 20,
-            width: "100%", maxWidth: 420,
-            maxHeight: "calc(100vh - 32px)",
-            display: "flex", flexDirection: "column",
-            boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-            animation: "scaleIn 0.22s cubic-bezier(0.4,0,0.2,1)",
-          }} onClick={e => e.stopPropagation()}>
+      {/* ── Add farm manager modal ── */}
+      {showFarmMgr && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowFarmMgr(false)}>
+          <div style={{ background: "var(--surface)", borderRadius: 20, padding: 24, width: "100%", maxWidth: 360, animation: "scaleIn 0.2s ease" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "var(--text)", marginBottom: 16 }}>🌾 Manage Farms</div>
 
-            {/* Sticky header */}
-            <div style={{ padding: "16px 18px 14px", borderBottom: `1px solid ${FG.border}`, flexShrink: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 10, background: FG.pale, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>🌾</div>
-                  <div style={{ fontSize: 17, fontWeight: 700, color: FG.dark }}>Add Expenditure</div>
-                </div>
-                <button onClick={() => setShowForm(false)} style={{ background: COLORS.bg, border: "none", cursor: "pointer", color: COLORS.textMuted, width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>×</button>
+            {/* Existing farms */}
+            {(farms || []).map(f => (
+              <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `0.5px solid var(--border)` }}>
+                <span style={{ fontSize: 14, color: "var(--text)", fontWeight: 600 }}>🌾 {f.name}</span>
+                {(farms || []).length > 1 && (
+                  <button onClick={() => deleteFarm(f.id)} style={{ background: COLORS.dangerLight, border: "none", color: COLORS.danger, borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+                    Delete
+                  </button>
+                )}
+              </div>
+            ))}
+
+            {/* Add new farm */}
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 8 }}>Add a new farm:</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input className="form-input" style={{ flex: 1 }} placeholder="e.g. Ogun State Farm"
+                  value={newFarmName} onChange={e => setNewFarmName(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && addFarm()} autoFocus />
+                <button className="btn btn-primary" onClick={addFarm} style={{ width: "auto", padding: "0 16px" }}>Add</button>
               </div>
             </div>
 
-            {/* Scrollable body */}
-            <div style={{ overflowY: "auto", padding: "16px 18px", flex: 1, WebkitOverflowScrolling: "touch" }}>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Date</label>
-                <input type="date" className="form-input" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))}
-                  style={{ borderColor: FG.border }} />
-              </div>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Description</label>
-                <textarea className={`form-input${errors.desc ? " error" : ""}`} rows={3}
-                  placeholder="What was this expense for?" value={form.desc}
-                  style={{ borderColor: FG.border }}
-                  onChange={e => { setForm(p => ({ ...p, desc: e.target.value })); setErrors(p => ({ ...p, desc: null })); }} />
-                {errors.desc && <div className="form-error">{errors.desc}</div>}
-              </div>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Amount (₦)</label>
-                <div style={{ position: "relative" }}>
-                  <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: FG.mid, fontWeight: 600 }}>₦</span>
-                  <input type="number" className={`form-input${errors.amount ? " error" : ""}`}
-                    style={{ paddingLeft: 28, borderColor: FG.border }}
-                    placeholder="0.00" value={form.amount}
-                    onChange={e => { setForm(p => ({ ...p, amount: e.target.value })); setErrors(p => ({ ...p, amount: null })); }} />
-                </div>
+            <button onClick={() => setShowFarmMgr(false)} style={{ marginTop: 16, width: "100%", background: "none", border: "none", color: "var(--text-muted)", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 8 }}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add expense modal ── */}
+      {showForm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowForm(false)}>
+          <div style={{ background: "var(--surface)", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400, animation: "scaleIn 0.2s ease" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "var(--text)", marginBottom: 16 }}>
+              🌾 Add Expense — {currentFarm?.name}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Date</label>
+              <input type="date" className="form-input" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Description</label>
+              <input className={`form-input${errors.desc ? " error" : ""}`} placeholder="e.g. Bought fertilizer bags"
+                value={form.desc} onChange={e => { setForm(p => ({ ...p, desc: e.target.value })); setErrors(p => ({ ...p, desc: null })); }} />
+              {errors.desc && <div className="form-error">{errors.desc}</div>}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">Amount (₦)</label>
+                <input type="number" className={`form-input${errors.amount ? " error" : ""}`} placeholder="0"
+                  value={form.amount} onChange={e => { setForm(p => ({ ...p, amount: e.target.value })); setErrors(p => ({ ...p, amount: null })); }} />
                 {errors.amount && <div className="form-error">{errors.amount}</div>}
               </div>
-              <div className="form-group">
-                <label className="form-label" style={{ color: FG.main }}>Category (optional)</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {FARM_CATS.map(cat => {
-                    const m = catMeta[cat];
-                    const active = form.category === cat;
-                    return (
-                      <button key={cat} onClick={() => setForm(p => ({ ...p, category: p.category === cat ? "" : cat }))} style={{
-                        padding: "7px 12px", borderRadius: 20,
-                        border: `1.5px solid ${active ? FG.main : FG.border}`,
-                        background: active ? FG.main : "#fff",
-                        color: active ? "#fff" : FG.main,
-                        fontSize: 12, fontWeight: 600, cursor: "pointer",
-                        fontFamily: "'Inter', sans-serif",
-                        display: "flex", alignItems: "center", gap: 5, transition: "all 0.15s",
-                      }}>
-                        <span>{m.icon}</span>{cat}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">Category</label>
+                <select className="form-input" value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))}>
+                  {Object.keys(catMeta).map(c => <option key={c} value={c}>{catMeta[c].icon} {c}</option>)}
+                </select>
               </div>
             </div>
 
-            {/* Sticky footer */}
-            <div style={{ padding: "12px 18px 16px", borderTop: `1px solid ${FG.border}`, flexShrink: 0, display: "flex", gap: 10 }}>
-              <button onClick={() => setShowForm(false)} style={{
-                flex: 1, padding: "12px", border: `1.5px solid ${FG.border}`, borderRadius: 12,
-                background: "#fff", color: FG.main, fontWeight: 600, fontSize: 14,
-                cursor: "pointer", fontFamily: "'Inter', sans-serif",
-              }}>Cancel</button>
-              <button onClick={saveExpense} style={{
-                flex: 2, padding: "12px",
-                background: `linear-gradient(135deg, ${FG.main}, ${FG.mid})`,
-                border: "none", borderRadius: 12,
-                color: "#fff", fontWeight: 700, fontSize: 14,
-                cursor: "pointer", fontFamily: "'Inter', sans-serif",
-                boxShadow: `0 3px 12px ${FG.main}55`,
-              }}>Save Expenditure</button>
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setShowForm(false)}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 2, background: `linear-gradient(135deg, ${FG.dark}, ${FG.mid})` }} onClick={saveExpense}>
+                💾 Save Expense
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {confirmDeleteFarm && (
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={() => setConfirmDeleteFarm(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:340 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:18, fontWeight:800, color:"var(--text)", marginBottom:8 }}>🗑️ Delete Farm?</div>
+            <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              This will permanently delete the farm and all its expense records. This cannot be undone.
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setConfirmDeleteFarm(null)}>Cancel</button>
+              <button className="btn btn-danger" style={{ flex:1, fontWeight:800 }} onClick={() => doDeleteFarm(confirmDeleteFarm)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
       {showExport && (
         <ExportModal
-          title="Farming Expenditures"
+          title={`${currentFarm?.name} — Expenditures`}
           onClose={() => setShowExport(false)}
           onExcelExport={() => {
             const headers = ["Date", "Description", "Category", "Amount (₦)"];
             const rows = expenses.map(e => [e.date, e.desc, e.category || "—", e.amount]);
-            exportToExcel("Farm_Expenditures_" + TODAY(), "Expenditures", rows, headers);
-            setShowExport(false); showToast("Excel file downloaded!");
+            exportToExcel(`Farm_${currentFarm?.name}_${TODAY()}`, "Expenditures", rows, headers);
+            setShowExport(false); showToast("Excel downloaded!");
           }}
           onPDFExport={() => {
             const headers = ["Date", "Description", "Category", "Amount (₦)"];
             const rows = expenses.map(e => [e.date, e.desc, e.category || "—", e.amount]);
-            exportToPDF("Farming Expenditures — Export", headers, rows, "Farm_Expenditures");
+            exportToPDF(`${currentFarm?.name} — Farm Expenditures`, headers, rows, `Farm_${currentFarm?.name}`);
             setShowExport(false);
           }}
         />
@@ -2901,6 +3307,7 @@ function FarmScreen({ user }) {
     </div>
   );
 }
+
 
 // ===================== HISTORY / DASHBOARD =====================
 function HistoryScreen({ user }) {
@@ -3569,7 +3976,7 @@ function DebtCreditScreen({ user }) {
     </div>
   );
 
-  // Theme palette — entire UI shifts based on active tab
+  // Theme palette   entire UI shifts based on active tab
   const debtOutstanding = records.filter(r => r.type === "debt" && !r.settled).length;
   const debtAllClear = !isCredit && debtOutstanding === 0;
 
@@ -3589,7 +3996,7 @@ function DebtCreditScreen({ user }) {
     inactiveBg: "#EDF7EE",
     inactiveColor: "#1D6F42",
   } : debtAllClear ? {
-    // All debts cleared — calming blue theme
+    // All debts cleared   calming blue theme
     bg:        "#EFF6FF",
     bannerBg:  `linear-gradient(135deg, #1E3A8A 0%, ${COLORS.primaryDark} 60%, ${COLORS.primary} 100%)`,
     surface:   "#fff",
@@ -4439,11 +4846,14 @@ function GuideTourModal({ onClose }) {
 
 // ===================== STAFF INVITE SECTION =====================
 function StaffInviteSection({ user }) {
-  const [email, setEmail]       = useState("");
-  const [invites, setInvites]   = useState([]);
-  const [loading, setLoading]   = useState(false);
-  const [fetching, setFetching] = useState(true);
-  const [msg, setMsg]           = useState({ text: "", ok: true });
+  const [email, setEmail]         = useState("");
+  const [invites, setInvites]     = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [fetching, setFetching]   = useState(true);
+  const [msg, setMsg]             = useState({ text: "", ok: true, isLink: false, copied: false });
+  const [pendingToken]            = useState(() => localStorage.getItem("rc_pending_invite"));
+  const [acceptMsg, setAcceptMsg] = useState("");
+  const [accepting, setAccepting] = useState(false);
   const token = localStorage.getItem("rc_token");
 
   // Load existing invites
@@ -4471,7 +4881,7 @@ function StaffInviteSection({ user }) {
       else {
         setInvites(prev => [data.invite, ...prev]);
         setEmail("");
-        setMsg({ text: data.inviteURL || "", ok: true, isLink: true });
+        setMsg({ text: data.inviteURL || (window.location.origin + "?invite=" + (data.invite?.token || "")), ok: true, isLink: true });
       }
     } catch(e) {
       setMsg({ text: "Network error. Try again.", ok: false });
@@ -4480,24 +4890,73 @@ function StaffInviteSection({ user }) {
   };
 
   const revokeInvite = async (inviteId) => {
-    if (!window.confirm("Remove this person's access?")) return;
+    // Confirmed inline — no window.confirm needed
     try {
-      await fetch(`${API_URL}/api/invite/${inviteId}`, {
+      const res = await fetch(`${API_URL}/api/invite/${inviteId}`, {
         method: "DELETE", headers: { Authorization: `Bearer ${token}` },
       });
-      setInvites(prev => prev.filter(i => i._id !== inviteId));
+      if (res.ok) {
+        // Remove from list immediately
+        setInvites(prev => prev.filter(i => i._id !== inviteId));
+      }
     } catch(e) {}
   };
 
+  const acceptPendingInvite = async () => {
+    if (!pendingToken) return;
+    setAccepting(true); setAcceptMsg("");
+    try {
+      const res = await fetch(`${API_URL}/api/invite/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ token: pendingToken }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        localStorage.removeItem("rc_pending_invite");
+        setAcceptMsg("✅ " + data.message);
+        setTimeout(() => window.location.reload(), 2000);
+      } else {
+        setAcceptMsg("❌ " + (data.error || "Failed to accept invite"));
+      }
+    } catch(e) {
+      setAcceptMsg("❌ Network error. Try again.");
+    }
+    setAccepting(false);
+  };
+
+  // If user has a pending invite token, show accept card
+  if (pendingToken) {
+    return (
+      <div className="card" style={{ marginBottom: "0.75rem", background: COLORS.primaryLight, border: `1.5px solid ${COLORS.primary}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.primary, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>📩</div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.primary }}>You have a pending invite!</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>Accept to join your employer's business records</div>
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={acceptPendingInvite} disabled={accepting}>
+          {accepting ? "Accepting…" : "✅ Accept Invite & Join Business"}
+        </button>
+        {acceptMsg && <div style={{ fontSize: 12, marginTop: 8, color: acceptMsg.startsWith("✅") ? COLORS.accent : COLORS.danger }}>{acceptMsg}</div>}
+        <button onClick={() => { localStorage.removeItem("rc_pending_invite"); window.location.reload(); }}
+          style={{ marginTop: 8, background: "none", border: "none", color: COLORS.textMuted, fontSize: 11, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+          Dismiss invite
+        </button>
+      </div>
+    );
+  }
+
   if (user.role === "staff") {
     return (
-      <div className="card" style={{ marginBottom: "0.75rem" }}>
+      <div className="card" style={{ marginBottom: "0.75rem", background: COLORS.accentLight, border: `1.5px solid ${COLORS.accent}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: COLORS.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👥</div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>Staff Account</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.accent }}>Staff Account</div>
             <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>
-              You are viewing and editing your employer's business records.
+              You have access to the Shop Sales section only. Farm, Customer Records and Debt are your own independent sections.
             </div>
           </div>
         </div>
@@ -4520,7 +4979,7 @@ function StaffInviteSection({ user }) {
         <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 12 }}>Loading...</div>
       ) : invites.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          {invites.map(inv => (
+          {invites.filter(inv => inv.status !== "revoked").map(inv => (
             <div key={inv._id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `0.5px solid ${COLORS.border}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ width: 32, height: 32, borderRadius: "50%", background: inv.status === "accepted" ? COLORS.accentLight : COLORS.primaryLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: inv.status === "accepted" ? COLORS.accent : COLORS.primary }}>
@@ -4563,35 +5022,39 @@ function StaffInviteSection({ user }) {
           {msg.text}
         </div>
       )}
-      {msg.isLink && msg.text && (() => {
-        // eslint-disable-next-line react-hooks/rules-of-hooks
-        const [copied, setCopied] = useState(false);
-        return (
-          <div style={{ marginTop: 10, background: COLORS.accentLight, border: `1px solid #6EE7B7`, borderRadius: 12, padding: "12px 14px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.accent, marginBottom: 8 }}>
-              ✅ Invite created! Share this link with your staff:
-            </div>
-            <div style={{ fontSize: 11, color: COLORS.textMuted, wordBreak: "break-all", marginBottom: 10, background: "#fff", borderRadius: 8, padding: "8px 10px", fontFamily: "'Space Mono', monospace" }}>
-              {msg.text}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() => { navigator.clipboard.writeText(msg.text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); }); }}
-                style={{ flex: 1, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
-                {copied ? "✅ Copied!" : "📋 Copy Link"}
-              </button>
-              <button
-                onClick={() => { const msg2 = encodeURIComponent("I'd like you to join my business on Record Chief. Use this link to accept: " + msg.text); window.open("https://wa.me/?text=" + msg2, "_blank"); }}
-                style={{ flex: 1, background: "#25D366", color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
-                📱 Share on WhatsApp
-              </button>
-            </div>
+      {msg.isLink && msg.text && (
+        <div style={{ marginTop: 10, background: COLORS.accentLight, border: `1px solid #6EE7B7`, borderRadius: 12, padding: "12px 14px" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.accent, marginBottom: 8 }}>
+            ✅ Invite created! Share this link with your staff:
           </div>
-        );
-      })()}
+          <div style={{ fontSize: 11, color: COLORS.textMuted, wordBreak: "break-all", marginBottom: 10, background: "var(--surface)", borderRadius: 8, padding: "8px 10px", fontFamily: "'Space Mono', monospace" }}>
+            {msg.text}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(msg.text).then(() => {
+                  setMsg(prev => ({ ...prev, copied: true }));
+                  setTimeout(() => setMsg(prev => ({ ...prev, copied: false })), 2500);
+                });
+              }}
+              style={{ flex: 1, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+              {msg.copied ? "✅ Copied!" : "📋 Copy Link"}
+            </button>
+            <button
+              onClick={() => {
+                const txt = encodeURIComponent("Join my business on Record Chief: " + msg.text);
+                window.open("https://wa.me/?text=" + txt, "_blank");
+              }}
+              style={{ flex: 1, background: "#25D366", color: "#fff", border: "none", borderRadius: 8, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+              📱 WhatsApp
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: 12, padding: "10px 12px", background: COLORS.primaryLight, borderRadius: 10, fontSize: 12, color: COLORS.primary, lineHeight: 1.6 }}>
-        💡 Invited staff will receive an email, sign up with their own account, and immediately see your business records. You can remove their access anytime.
+        💡 Invited staff will have access to your <strong>Shop Sales</strong> and <strong>Inventory</strong> only. Farm, Customer Records and Debt sections remain private to each user. You can remove access anytime.
       </div>
     </div>
   );
@@ -4769,6 +5232,60 @@ function DeleteAccountSection({ user, onLogout }) {
   );
 }
 
+function CurrencySelector() {
+  const [cur, setCur] = useState(localStorage.getItem("sl_currency") || "NGN");
+  const [saved, setSaved] = useState(false);
+  return (
+    <div className="card" style={{ marginBottom:"0.75rem" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+        <div style={{ width:40, height:40, borderRadius:12, background:"var(--accent-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>💱</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Currency</div>
+          <div style={{ fontSize:12, color:"var(--text-muted)", marginTop:1 }}>
+            {saved ? <span style={{ color:"var(--accent)" }}>✅ Saved — restart app to see changes</span> : "Default is Nigerian Naira (₦)"}
+          </div>
+        </div>
+        <select
+          value={cur}
+          onChange={e => {
+            const v = e.target.value;
+            setCur(v);
+            localStorage.setItem("sl_currency", v);
+            setSaved(true);
+            // Fire sync event so all screens pick up new currency
+            window.dispatchEvent(new CustomEvent("rc_sync_update"));
+          }}
+          className="form-input"
+          style={{ width:"auto", padding:"6px 10px", fontSize:14, fontWeight:700 }}>
+          {Object.entries(CURRENCIES).map(([code, sym]) => (
+            <option key={code} value={code}>{sym} {code}</option>
+          ))}
+        </select>
+      </div>
+      <div style={{ marginTop:10, display:"flex", gap:6, flexWrap:"wrap" }}>
+        {Object.entries(CURRENCIES).map(([code, sym]) => (
+          <button key={code} onClick={() => {
+            setCur(code);
+            localStorage.setItem("sl_currency", code);
+            setSaved(true);
+            window.dispatchEvent(new CustomEvent("rc_sync_update"));
+          }}
+          style={{
+            padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, cursor:"pointer",
+            fontFamily:"'Inter',sans-serif",
+            background: cur === code ? "var(--primary)" : "var(--bg)",
+            color: cur === code ? "#fff" : "var(--text-muted)",
+            border: `1px solid ${cur === code ? "var(--primary)" : "var(--border)"}`,
+            transition:"all 0.15s",
+          }}>
+            {sym} {code}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfileScreen({ user, onLogout, onManageSectors }) {
   const avatarKey = `sl_avatar_${user.uid}`;
   const [editing, setEditing] = useState(false);
@@ -4864,13 +5381,20 @@ function ProfileScreen({ user, onLogout, onManageSectors }) {
       </div>
 
       <div className="section-title">Sharing & Collaboration</div>
-      <StaffInviteSection user={user} />
+      {/* Staff invite — shop sector only */}
+      {(user.sectors || ["shop"]).includes("shop") && (
+        <StaffInviteSection user={user} />
+      )}
 
       <EmailVerifySection user={user} onVerified={() => {
         const updated = { ...user, emailVerified: true };
         const session = localStorage.getItem("rc_session");
         if (session) localStorage.setItem("rc_session", JSON.stringify(updated));
       }} />
+      {/* Currency setting */}
+      <div className="section-title">Currency & Display</div>
+      <CurrencySelector />
+
       <div className="section-title">Privacy & Security</div>
       <div className="card" style={{ marginBottom: "0.75rem" }}>
         {(() => {
@@ -5041,6 +5565,161 @@ function OnboardingScreen({ user, onDone }) {
   );
 }
 
+
+
+// ===================== SYNC HISTORY SCREEN =====================
+function SyncHistoryScreen({ user }) {
+  const [log, setLog]           = useState(() => SyncLog.get());
+  const [showBackup, setShowBackup] = useState(false);
+  const lastSync = localStorage.getItem("rc_last_sync");
+
+  // Weekly backup prompt   show if last backup was >7 days ago
+  const lastBackupKey = `rc_last_backup_${user.uid}`;
+  const lastBackup    = localStorage.getItem(lastBackupKey);
+  const daysSinceBackup = lastBackup
+    ? Math.floor((Date.now() - new Date(lastBackup)) / 86400000)
+    : 999;
+  const showBackupPrompt = daysSinceBackup >= 7;
+
+  const downloadBackup = () => {
+    const uid = user.uid;
+    const backup = {
+      exportedAt:  new Date().toISOString(),
+      user:        { name: user.name, email: user.email, location: user.location },
+      inventory:   JSON.parse(localStorage.getItem(`sl_inv_${uid}`)       || "[]"),
+      shopSales:   JSON.parse(localStorage.getItem(`sl_shopsales_${uid}`) || "[]"),
+      farmExpenses:JSON.parse(localStorage.getItem(`sl_farm_${uid}`)      || "[]"),
+      salesEntries:JSON.parse(localStorage.getItem(`sl_sales_${uid}`)     || "[]"),
+      debtRecords: JSON.parse(localStorage.getItem(`sl_debt_${uid}`)      || "[]"),
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `RecordChief_Backup_${new Date().toISOString().split("T")[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    localStorage.setItem(lastBackupKey, new Date().toISOString());
+    setShowBackup(false);
+  };
+
+  const typeColor = { kept_local: COLORS.amber, applied_server: COLORS.accent, conflict: COLORS.danger };
+  const typeLabel = { kept_local: "⚠️ Kept Local", applied_server: "✅ Applied Server", conflict: "❌ Conflict" };
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      {/* Header */}
+      <div style={{ marginBottom: "1rem" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text)" }}>🔄 Sync History</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3 }}>
+          {lastSync ? `Last synced: ${new Date(lastSync).toLocaleString("en-NG")}` : "Not yet synced this session"}
+        </div>
+      </div>
+
+      {/* Weekly backup prompt */}
+      {showBackupPrompt && (
+        <div style={{ background: "linear-gradient(135deg, #1E3A8A, #2563EB)", borderRadius: 16, padding: "16px 18px", marginBottom: "1rem", color: "#fff" }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 5 }}>📦 Weekly Backup Due</div>
+          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 14, lineHeight: 1.6 }}>
+            {lastBackup
+              ? `Your last backup was ${daysSinceBackup} days ago. Download a fresh JSON backup of all your data.`
+              : "You haven't downloaded a local backup yet. It's a safety net in case anything goes wrong."}
+          </div>
+          <button onClick={downloadBackup} style={{
+            background: "#fff", color: "#1E3A8A", border: "none", borderRadius: 10,
+            padding: "9px 18px", fontSize: 13, fontWeight: 800, cursor: "pointer",
+            fontFamily: "'Inter', sans-serif",
+          }}>
+            💾 Download Backup Now
+          </button>
+        </div>
+      )}
+
+      {/* Manual backup card */}
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: "var(--primary-light)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>💾</div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>Local JSON Backup</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>
+              {lastBackup ? `Last backup: ${new Date(lastBackup).toLocaleDateString("en-NG")}` : "No backup downloaded yet"}
+            </div>
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={downloadBackup}>
+          💾 Download Full Backup (.json)
+        </button>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8, lineHeight: 1.6 }}>
+          Downloads all your records as a JSON file. Store it in Google Drive or WhatsApp for safety.
+        </div>
+      </div>
+
+      {/* Sync log */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+        <div className="section-title" style={{ margin: 0 }}>Conflict Log</div>
+        {log.length > 0 && (
+          <button onClick={() => { SyncLog.clear(); setLog([]); }}
+            style={{ background: "none", border: "none", color: COLORS.danger, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      {log.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: "2rem" }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>No conflicts</div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>All syncs have been clean</div>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          {log.map((entry, i) => (
+            <div key={i} style={{
+              padding: "12px 16px",
+              borderBottom: i < log.length - 1 ? `0.5px solid var(--border)` : "none",
+              display: "flex", alignItems: "flex-start", gap: 12,
+            }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: typeColor[entry.type] || COLORS.textMuted, marginTop: 5, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: typeColor[entry.type] || "var(--text)" }}>
+                  {typeLabel[entry.type] || entry.type}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  {entry.label} — {entry.reason}
+                </div>
+                {entry.localCount !== undefined && (
+                  <div style={{ fontSize: 11, color: "var(--text-light)", marginTop: 2 }}>
+                    Local: {entry.localCount} records · Server: {entry.serverCount} records
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-light)", flexShrink: 0, marginTop: 2 }}>
+                {new Date(entry.ts).toLocaleTimeString("en-NG", { hour: "2-digit", minute: "2-digit" })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Sync info */}
+      <div className="card" style={{ marginTop: "1rem" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 10 }}>⚙️ Sync Settings</div>
+        {[
+          ["Active interval", "Push every 30s · Pull every 15s"],
+          ["Idle interval", "Push every 2min · Pull every 60s (saves battery)"],
+          ["Background", "Sync paused when app is in background"],
+          ["Conflict strategy", "Local data wins when server is behind"],
+          ["Storage", "IndexedDB (primary) · localStorage (fallback)"],
+        ].map(([k, v]) => (
+          <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `0.5px solid var(--border)` }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>{k}</span>
+            <span style={{ fontSize: 12, color: "var(--text)", textAlign: "right", maxWidth: "55%" }}>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ===================== OFFLINE INDICATOR =====================
 function OfflineIndicator() {
@@ -5236,6 +5915,7 @@ function App() {
   const [user, setUser] = useLocalState("sl_user", null);
   const [sector, setSector] = useLocalState("sl_sector", "shop");
   const [navTab, setNavTab] = useState("home");
+  const [navHistory, setNavHistory] = useState(["home"]); // back stack
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
@@ -5252,30 +5932,100 @@ function App() {
     document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
 
-  // Real-time sync — push changes every 30s, pull latest every 15s
+  //    Back button / Android back gesture handler               
+  useEffect(() => {
+    // Push initial state so back button has somewhere to return to
+    window.history.pushState({ screen: "app", navTab: "home" }, "");
+
+    const handlePopState = (e) => {
+      // If not in app, let browser handle it
+      if (screen !== "app") return;
+
+      // If there's internal nav history, go back within the app
+      setNavHistory(prev => {
+        if (prev.length > 1) {
+          const newHistory = prev.slice(0, -1);
+          const prevTab = newHistory[newHistory.length - 1];
+          setNavTab(prevTab);
+          // Re-push state so there's always something to pop
+          window.history.pushState({ screen: "app", navTab: prevTab }, "");
+          return newHistory;
+        }
+        // Already at home   go to home if not there
+        if (navTab !== "home") {
+          setNavTab("home");
+          window.history.pushState({ screen: "app", navTab: "home" }, "");
+          return ["home"];
+        }
+        // At home   push state again to prevent exit on first press
+        window.history.pushState({ screen: "app", navTab: "home" }, "");
+        return prev;
+      });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [screen, navTab]);
+
+  // Real-time sync   push changes every 30s, pull latest every 15s
   useEffect(() => {
     if (!user?.uid) return;
     const uid = user.uid;
 
-    // On login: push local then pull server
-    if (navigator.onLine) {
+    //    Adaptive intervals                               
+    // Active (user interacted in last 2 min): push 30s / pull 15s
+    // Idle  (no interaction for 2+ min):      push 2min / pull 60s
+    // Background (page hidden):               pause entirely
+    let lastActivity = Date.now();
+    let pushTimer = null;
+    let pullTimer = null;
+
+    const ACTIVE_PUSH  = 30_000;
+    const ACTIVE_PULL  = 15_000;
+    const IDLE_PUSH    = 120_000;
+    const IDLE_PULL    = 60_000;
+    const IDLE_THRESH  = 120_000; // 2 min
+
+    const isIdle = () => Date.now() - lastActivity > IDLE_THRESH;
+
+    const markActive = () => { lastActivity = Date.now(); };
+    ["click","keydown","touchstart","scroll"].forEach(ev =>
+      window.addEventListener(ev, markActive, { passive:true })
+    );
+
+    const doSync = () => {
+      if (!navigator.onLine || document.hidden) return;
       AuthAPI.syncToServer(uid).catch(() => {});
-      setTimeout(() => AuthAPI.syncFromServer(uid).catch(() => {}), 2000);
+    };
+    const doPull = () => {
+      if (!navigator.onLine || document.hidden) return;
+      AuthAPI.syncFromServer(uid).catch(() => {});
+    };
+
+    const schedulePush = () => {
+      clearTimeout(pushTimer);
+      const delay = isIdle() ? IDLE_PUSH : ACTIVE_PUSH;
+      pushTimer = setTimeout(() => { doSync(); schedulePush(); }, delay);
+    };
+    const schedulePull = () => {
+      clearTimeout(pullTimer);
+      const delay = isIdle() ? IDLE_PULL : ACTIVE_PULL;
+      pullTimer = setTimeout(() => { doPull(); schedulePull(); }, delay);
+    };
+
+    // On login: push then pull
+    if (navigator.onLine) {
+      doSync();
+      setTimeout(doPull, 2000);
     }
+    schedulePush();
+    schedulePull();
 
-    // Push local changes every 30 seconds
-    const pushInterval = setInterval(() => {
-      if (navigator.onLine) AuthAPI.syncToServer(uid).catch(() => {});
-    }, 30000);
-
-    // Pull server changes every 15 seconds (real-time across devices)
-    const pullInterval = setInterval(() => {
-      if (navigator.onLine) AuthAPI.syncFromServer(uid).catch(() => {});
-    }, 15000);
-
-    // When sync detects a change, force a re-render by toggling a state
+    // Re-render on sync update
     const handleSyncUpdate = () => {
-      // Re-read user sectors in case they changed
+      // Increment tick to force ALL components to re-read from localStorage
+      setSyncTick(t => t + 1);
+      // Also refresh user object from session cache
       const session = localStorage.getItem("rc_session");
       if (session) {
         try {
@@ -5288,18 +6038,42 @@ function App() {
 
     // Sync immediately when coming back online
     const handleOnline = () => {
-      setTimeout(() => {
-        AuthAPI.syncToServer(uid).catch(() => {});
-        setTimeout(() => AuthAPI.syncFromServer(uid).catch(() => {}), 1500);
-      }, 500);
+      setTimeout(() => { doSync(); setTimeout(doPull, 1500); }, 500);
     };
     window.addEventListener("online", handleOnline);
 
+    // Push immediately on every data write (real-time cross-device sync)
+    let writeTimer = null;
+    const handleDataWrite = () => {
+      if (!navigator.onLine) return;
+      clearTimeout(writeTimer);
+      writeTimer = setTimeout(() => {
+        doSync();
+        setTimeout(doPull, 2000);
+      }, 1500);
+    };
+    window.addEventListener("rc_data_write", handleDataWrite);
+
+    // Pause when tab hidden, resume when visible
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        markActive();
+        if (navigator.onLine) { doSync(); setTimeout(doPull, 1000); }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
     return () => {
-      clearInterval(pushInterval);
-      clearInterval(pullInterval);
+      clearTimeout(pushTimer);
+      clearTimeout(pullTimer);
+      clearTimeout(writeTimer);
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("rc_sync_update", handleSyncUpdate);
+      window.removeEventListener("rc_data_write", handleDataWrite);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      ["click","keydown","touchstart","scroll"].forEach(ev =>
+        window.removeEventListener(ev, markActive)
+      );
     };
   }, [user?.uid]);
 
@@ -5335,7 +6109,7 @@ function App() {
     return () => clearTimeout(timer);
   }, [user?.uid]);
 
-  // Real-time notification count — polls every 3 seconds
+  // Real-time notification count   polls every 3 seconds
   useEffect(() => {
     const compute = () => {
       if (!user?.uid) return;
@@ -5356,6 +6130,25 @@ function App() {
 
   // Close sector switcher when navigating away
   useEffect(() => { setShowSectorSwitcher(false); }, [navTab]);
+
+  // Track navTab changes to build back stack for Android back button
+  const prevNavTabRef = useRef(null);
+  useEffect(() => {
+    if (!user) return; // don't track pre-login navigation
+    const prev = prevNavTabRef.current;
+    if (prev !== null && prev !== navTab) {
+      // Push new entry to history
+      window.history.pushState({ screen: "app", navTab }, "");
+      setNavHistory(h => {
+        // Don't duplicate consecutive same tabs
+        if (h[h.length - 1] === navTab) return h;
+        // Limit stack to 20 entries
+        const next = [...h, navTab].slice(-20);
+        return next;
+      });
+    }
+    prevNavTabRef.current = navTab;
+  }, [navTab, user]);
 
   useEffect(() => {
     // Mobile PWA hints
@@ -5462,21 +6255,35 @@ function App() {
   }, []);
 
   const [showPinSetup, setShowPinSetup] = useState(false);
+  const [syncTick, setSyncTick] = useState(0); // increments on every successful pull
+  const [pinSetupMode, setPinSetupMode] = useState("prompt"); // "prompt" | "enter"
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [pinP1, setPinP1] = useState("");
+  const [pinP2, setPinP2] = useState("");
+  const [pinErr, setPinErr] = useState("");
 
   const handleAuth = (u, sectors, isNewSignup = false) => {
     const fullUser = { ...u, sectors: sectors || u.sectors || ["shop"] };
     setUser(fullUser);
     localStorage.setItem("rc_session", JSON.stringify(fullUser));
-    if (sectors && sectors.length > 0) setSector(sectors[0]);
+    if (fullUser.role === "staff") {
+      setSector("shop");
+    } else if (sectors && sectors.length > 0) {
+      setSector(sectors[0]);
+    }
     setScreen("app");
     setNavTab("home");
     if (!showOnboarding) { setShowOnboarding(false); }
-    // Prompt PIN setup for new signups (if no PIN already set)
-    if (isNewSignup && !localStorage.getItem("sl_pin")) {
-      setTimeout(() => setShowPinSetup(true), 1200);
-    }
-    // Pull latest data from server — also refresh profile to get latest sectors
+    // PIN setup is triggered after onboarding completes (see OnboardingScreen onDone)
+    // We still set the flag so the onboarding knows to show it
+    if (isNewSignup) localStorage.setItem("rc_new_signup", "1");
+    // Weekly backup nudge
+    const _lbk = `rc_last_backup_${fullUser.uid}`;
+    const _lb  = localStorage.getItem(_lbk);
+    const _days = _lb ? Math.floor((Date.now() - new Date(_lb)) / 86400000) : 999;
+    if (_days >= 7 && !isNewSignup) setTimeout(() => setNavTab("synclog"), 5000);
+
+    // Pull latest data from server   also refresh profile to get latest sectors
     const token = localStorage.getItem("rc_token");
     if (token) {
       fetch(`${API_URL}/api/auth/me`, {
@@ -5496,7 +6303,7 @@ function App() {
   const handleLogout = async () => {
     await AuthAPI.signOut();
     setUser(null);
-    setScreen("welcome");
+    setScreen("login");
   };
 
   const handleManageSectors = () => setNavTab("manageSectors");
@@ -5523,29 +6330,135 @@ function App() {
   };
 
   if (screen === "welcome") return (<><style>{css}</style><WelcomeScreen onNavigate={setScreen} /></>);
-  if (screen === "signup") return (<><style>{css}</style><SignupScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
-  if (screen === "login") return (<><style>{css}</style><LoginScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
-
-  // PIN setup prompt for new signups
-  if (showPinSetup) return (
+  if (screen === "demo") return (
     <><style>{css}</style>
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div style={{ background: COLORS.surface, borderRadius: 24, padding: 28, width: "100%", maxWidth: 360, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>🔒</div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: COLORS.text, marginBottom: 8 }}>Set a PIN lock?</div>
-        <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 24, lineHeight: 1.6 }}>
-          Protect your business records with a 4-digit PIN. You can always set or change this later in Profile.
-        </div>
-        <button className="btn btn-primary" style={{ marginBottom: 10 }} onClick={() => { setShowPinSetup(false); setNavTab("profile"); }}>
-          🔐 Set PIN Now
+    <div style={{ minHeight:"100vh", background:"linear-gradient(145deg,#5B21B6,#7C3AED,#4338CA)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem 1.5rem" }}>
+      <div style={{ fontSize:52, marginBottom:16 }}>🎮</div>
+      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:22, fontWeight:700, color:"#fff", marginBottom:8 }}>Demo Mode</div>
+      <div style={{ fontSize:14, color:"rgba(255,255,255,0.75)", textAlign:"center", maxWidth:280, lineHeight:1.7, marginBottom:28 }}>
+        Explore Record Chief with sample business data — no account needed. Changes won't be saved.
+      </div>
+      <div style={{ background:"#fff", borderRadius:20, padding:"20px", width:"100%", maxWidth:360 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:COLORS.text, marginBottom:14 }}>What you'll explore:</div>
+        {[
+          ["🏪","Shop Sales","See a shop with 5 products, today's sales, and stock alerts"],
+          ["🌾","Farm Records","View farm expenses across seeds, labour, and equipment"],
+          ["🤝","Debt & Credit","See outstanding credits, overdue amounts, and settled records"],
+          ["💼","Customer Records","Browse sample customer entries with custom fields"],
+        ].map(([icon,title,desc]) => (
+          <div key={title} style={{ display:"flex", gap:12, marginBottom:14 }}>
+            <div style={{ fontSize:22, flexShrink:0 }}>{icon}</div>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:COLORS.text }}>{title}</div>
+              <div style={{ fontSize:11, color:COLORS.textMuted, marginTop:2, lineHeight:1.5 }}>{desc}</div>
+            </div>
+          </div>
+        ))}
+        <button className="btn btn-primary" style={{ marginBottom:10, background:"linear-gradient(135deg,#7C3AED,#5B21B6)" }}
+          onClick={() => {
+            loadDemoData();
+            setUser(DEMO_USER);
+            setSector("shop");
+            setScreen("app");
+          }}>
+          🚀 Launch Demo
         </button>
-        <button onClick={() => setShowPinSetup(false)} style={{ width: "100%", background: "none", border: "none", color: COLORS.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 8 }}>
-          Skip for now
+        <button onClick={() => setScreen("welcome")} style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:"8px" }}>
+          ← Back to Welcome
         </button>
       </div>
     </div>
     </>
   );
+  if (screen === "signup") return (<><style>{css}</style><SignupScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
+  if (screen === "login") return (<><style>{css}</style><LoginScreen onAuth={handleAuth} onNavigate={setScreen} /></>);
+
+  if (!showOnboarding && user) return (
+    <>
+      <style>{css}</style>
+      <OnboardingScreen user={user} onDone={() => {
+        setShowOnboarding(true);
+        // Show PIN setup after onboarding completes (new signup only)
+        if (!localStorage.getItem("sl_pin")) {
+          setTimeout(() => setShowPinSetup(true), 400);
+        }
+      }} />
+    </>
+  );
+
+  if (showPinSetup) return (
+    <><style>{css}</style>
+    <div style={{
+      minHeight:"100vh",
+      background:"linear-gradient(135deg,#1E3A8A 0%,#1D4ED8 55%,#0F766E 100%)",
+      display:"flex", alignItems:"center", justifyContent:"center", padding:20,
+    }}>
+      <div style={{
+        background:"#fff", borderRadius:24, padding:"32px 28px",
+        width:"100%", maxWidth:360, textAlign:"center",
+        boxShadow:"0 24px 60px rgba(0,0,0,0.25)",
+      }}>
+        {pinSetupMode === "prompt" ? (
+          <>
+            <div style={{ fontSize:52, marginBottom:12 }}>🔒</div>
+            <div style={{ fontSize:22, fontWeight:800, color:COLORS.text, marginBottom:8 }}>Set a PIN lock?</div>
+            <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:28, lineHeight:1.7 }}>
+              Protect your business records with a 4-digit PIN. You can always set or change this later in Profile.
+            </div>
+            <button className="btn btn-primary" style={{ marginBottom:12, fontSize:15, fontWeight:700 }}
+              onClick={() => { setPinSetupMode("enter"); setPinP1(""); setPinP2(""); setPinErr(""); }}>
+              🔐 Set PIN Now
+            </button>
+            <button
+              onClick={() => { setShowPinSetup(false); setPinSetupMode("prompt"); localStorage.removeItem("rc_new_signup"); }}
+              style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:8 }}>
+              Skip for now
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize:40, marginBottom:10 }}>🔐</div>
+            <div style={{ fontSize:20, fontWeight:800, color:COLORS.text, marginBottom:6 }}>Create your PIN</div>
+            <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:20, lineHeight:1.6 }}>
+              Enter a 4-digit PIN to secure your account.
+            </div>
+            <div className="form-group" style={{ textAlign:"left" }}>
+              <label className="form-label">New PIN (4 digits)</label>
+              <input type="password" inputMode="numeric" maxLength={4} className="form-input"
+                value={pinP1}
+                onChange={e => { setPinP1(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
+                placeholder="••••"
+                style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }}
+                autoFocus />
+            </div>
+            <div className="form-group" style={{ textAlign:"left" }}>
+              <label className="form-label">Confirm PIN</label>
+              <input type="password" inputMode="numeric" maxLength={4} className="form-input"
+                value={pinP2}
+                onChange={e => { setPinP2(e.target.value.replace(/\D/g,"")); setPinErr(""); }}
+                placeholder="••••"
+                style={{ textAlign:"center", fontSize:30, letterSpacing:14, fontFamily:"'Space Mono',monospace" }} />
+            </div>
+            {pinErr && <div style={{ color:COLORS.danger, fontSize:13, marginBottom:10 }}>{pinErr}</div>}
+            <button className="btn btn-primary" style={{ marginBottom:12 }} onClick={() => {
+              if (pinP1.length !== 4) { setPinErr("PIN must be exactly 4 digits"); return; }
+              if (pinP1 !== pinP2) { setPinErr("PINs do not match. Try again."); return; }
+              localStorage.setItem("sl_pin", pinP1);
+              setShowPinSetup(false); setPinSetupMode("prompt");
+              setPinP1(""); setPinP2(""); setPinErr("");
+              localStorage.removeItem("rc_new_signup");
+            }}>
+              ✅ Save PIN &amp; Continue
+            </button>
+            <button onClick={() => setPinSetupMode("prompt")}
+              style={{ width:"100%", background:"none", border:"none", color:COLORS.textMuted, fontSize:13, cursor:"pointer", fontFamily:"'Inter',sans-serif", padding:8 }}>
+              ← Back
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+    </>;
 
   // PIN lock screen
   if (pin && !pinUnlocked) return (
@@ -5589,7 +6502,7 @@ function App() {
   const sectorMeta = ALL_SECTORS.find(s => s.id === sector) || ALL_SECTORS[0];
   const sectorLabel = `${sectorMeta.icon} ${sectorMeta.id === "sales" ? "Sales" : sectorMeta.id === "shop" ? "Shop" : "Farm"}`;
 
-  const userSectors = (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
+  const userSectors = user.role === "staff" ? ["shop"] : (user.sectors && user.sectors.length > 0) ? user.sectors : ["shop"];
   const activeSectors = ALL_SECTORS.filter(s => userSectors.includes(s.id));
   const initials = user?.name?.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
 
@@ -5601,15 +6514,8 @@ function App() {
     : navTab === "notifications" ? "🔔 Notifications"
     : sectorLabel;
 
-  // Onboarding — show once after first login
-  if (!showOnboarding && user) return (
-    <>
-      <style>{css}</style>
-      <OnboardingScreen user={user} onDone={() => setShowOnboarding(true)} />
-    </>
-  );
-
-  // Sidebar active accent — matches each section's theme colour
+  // Onboarding   show once after first login
+  // Sidebar active accent   matches each section's theme colour
   const sidebarAccent = (() => {
     if (navTab === "sector") {
       if (sector === "farm")  return { border: "#40916C", bg: "rgba(29,111,66,0.25)" };
@@ -5618,7 +6524,7 @@ function App() {
     }
     if (navTab === "debtcredit") return { border: "#86C99A", bg: "rgba(29,111,66,0.20)" };
     if (navTab === "history")    return { border: "#34D399", bg: "rgba(5,150,105,0.18)" };
-    // home, profile, manageSectors — default blue
+    // home, profile, manageSectors   default blue
     return { border: "#60A5FA", bg: "rgba(37,99,235,0.25)" };
   })();
 
@@ -5635,6 +6541,13 @@ function App() {
     <>
       <style>{css}</style>
       <OfflineIndicator />
+      {/* Demo mode banner */}
+      {localStorage.getItem("rc_demo_mode") === "1" && (
+        <div style={{ background:"linear-gradient(135deg,#7C3AED,#5B21B6)", color:"#fff", fontSize:12, fontWeight:700, padding:"8px 16px", textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
+          <span>🎮 Demo Mode — data is not saved</span>
+          <button onClick={() => { clearDemoData(); setUser(null); setScreen("welcome"); }} style={{ background:"rgba(255,255,255,0.25)", border:"none", color:"#fff", borderRadius:6, padding:"3px 10px", fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif", fontWeight:700 }}>Exit Demo</button>
+        </div>
+      )}
       <div className="app">
 
         {/* ── SIDEBAR ── */}
@@ -5654,9 +6567,14 @@ function App() {
           <button className="nav-tab" onClick={() => { setNavTab("home"); setSidebarOpen(false); }} title="Home" style={navTab === "home" ? activeNavStyle : {}}>
             <Icon name="home" size={16} /><span className="nav-label">Home</span>
           </button>
+          {user?.role !== "staff" && <>
           <button className="nav-tab" onClick={() => { setNavTab("history"); setSidebarOpen(false); }} title="Overview" style={navTab === "history" ? activeNavStyle : {}}>
-            <Icon name="history" size={16} /><span className="nav-label">Overview</span>
+            <Icon name="chart" size={16} /><span className="nav-label">Overview</span>
           </button>
+          <button className="nav-tab" onClick={() => { setNavTab("synclog"); setSidebarOpen(false); }} title="Sync & Backup" style={navTab === "synclog" ? activeNavStyle : {}}>
+            <Icon name="history" size={16} /><span className="nav-label">Sync</span>
+          </button>
+          </>}
 
           {activeSectors.length > 0 && <div className="sidebar-section">Sectors</div>}
           {activeSectors.map(s => {
@@ -5681,6 +6599,7 @@ function App() {
             const debtKey = `sl_debt_${user?.uid}`;
             const debtRecs = (() => { try { return JSON.parse(localStorage.getItem(debtKey)) || []; } catch { return []; } })();
             const overdueN = debtRecs.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
+            if (user?.role === "staff") return null;
             return (
               <button className="nav-tab"
                 title="Debt & Credit"
@@ -5838,7 +6757,7 @@ function App() {
                       onMouseLeave={e => e.currentTarget.style.background = "none"}>
                         👤 Profile
                       </button>
-                      <button onClick={async () => { setShowProfileMenu(false); await AuthAPI.signOut(); setUser(null); setScreen("welcome"); }} style={{
+                      <button onClick={async () => { setShowProfileMenu(false); await AuthAPI.signOut(); setUser(null); setScreen("login"); }} style={{
                         width: "100%", padding: "11px 14px", background: "none", border: "none",
                         cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
                         fontSize: 13, fontWeight: 600, color: COLORS.danger, fontFamily: "'Inter', sans-serif",
@@ -5912,12 +6831,12 @@ function App() {
             </div>
           )}
           <div className="main">
-            {navTab === "home" && <HomeScreen user={user} sector={sector} onSetSector={(s) => { setSector(s); setNavTab("sector"); }} onManageSectors={handleManageSectors} onViewOverview={() => setNavTab("history")} onViewDebt={() => setNavTab("debtcredit")} />}
+            {navTab === "home" && <HomeScreen key={syncTick} user={user} sector={sector} onSetSector={(s) => { setSector(s); setNavTab("sector"); }} onManageSectors={handleManageSectors} onViewOverview={() => setNavTab("history")} onViewDebt={() => setNavTab("debtcredit")} />}
             {navTab === "sector" && sector === "sales" && <SalesRepScreen user={user} />}
             {navTab === "sector" && sector === "shop" && <ShopScreen user={user} />}
             {navTab === "sector" && sector === "farm" && <FarmScreen user={user} />}
             {navTab === "history" && <HistoryScreen user={user} />}
-            {navTab === "debtcredit" && <DebtCreditScreen user={user} />}
+            {navTab === "debtcredit" && <DebtCreditScreen key={`debt-${syncTick}`} user={user} />}
             {navTab === "notifications" && <NotificationsScreen user={user} onNavigateShop={() => { setSector("shop"); setNavTab("sector"); localStorage.setItem("rc_open_inventory", "1"); }} />}
             {navTab === "profile" && <ProfileScreen user={user} onLogout={handleLogout} onManageSectors={handleManageSectors} />}
             {navTab === "manageSectors" && <ManageSectorsScreen user={user} onSave={handleSaveSectors} onBack={() => setNavTab("home")} />}
@@ -5931,7 +6850,11 @@ function App() {
           const overdueN = debtRecs.filter(r => !r.settled && r.dueDate && r.dueDate < TODAY()).length;
           const firstSector = activeSectors[0];
           const activeSectorAccent = sector === "farm" ? "#40916C" : sector === "sales" ? "#A78BFA" : "#60A5FA";
-          const tabs = [
+          const tabs = user.role === "staff" ? [
+            { id: "home",    icon: "🏠", label: "Home",    accent: "#60A5FA" },
+            { id: "sector",  icon: "🏪", label: "Shop",    accent: "#60A5FA" },
+            { id: "profile", icon: "👤", label: "Profile", accent: "#60A5FA" },
+          ] : [
             { id: "home",       icon: "🏠", label: "Home",     accent: "#60A5FA" },
             { id: "sector",     icon: activeSectors.find(s => s.id === sector)?.icon || "🏪", label: "Sector", accent: activeSectorAccent },
             { id: "debtcredit", icon: "🤝", label: "Debts",    accent: "#86C99A", badge: overdueN },
