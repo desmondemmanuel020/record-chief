@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,viewport-fit=cover,user-scalable=no,shrink-to-fit=no"/>
+  <link rel="manifest" href="manifest.json"/>
+  <meta name="theme-color" content="#0A0F1E"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Record Chief"/>
+  <link rel="apple-touch-icon" href="icons/icon-192.png"/>
+  <link rel="apple-touch-icon" sizes="152x152" href="icons/icon-192.png"/>
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-192.png"/>
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"/>
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png"/>
+  <meta property="og:title" content="Record Chief"/>
+  <meta property="og:description" content="Track shop sales, farm expenses and debt — built for Nigerian businesses."/>
+  <meta property="og:image" content="icons/icon-512.png"/>
+  <meta property="og:type" content="website"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap"/>
+  <title>Record Chief</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:sans-serif;background:#1E3A8A}
+    #root{min-height:100vh;background:#F8FAFC}
+    #splash{position:fixed;inset:0;z-index:9999;background:linear-gradient(145deg,#1E3A8A,#1D4ED8,#2563EB);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;transition:opacity .6s}
+    #splash.done{opacity:0;pointer-events:none}
+    #si{font-size:64px;margin-bottom:16px;animation:p 1.5s ease-in-out infinite}
+    #st{font-size:28px;font-weight:800;font-family:monospace;letter-spacing:-0.5px}
+    #ss{font-size:13px;opacity:.65;margin-top:8px}
+    #sl{width:120px;height:3px;background:rgba(255,255,255,.2);border-radius:2px;margin-top:24px;overflow:hidden}
+    #slb{height:100%;background:#fff;border-radius:2px;animation:l 2s ease forwards}
+    @keyframes p{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+    @keyframes l{0%{width:0}100%{width:100%}}
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <div id="si">📒</div>
+    <div id="st">Record Chief</div>
+    <div id="ss">Your business records, organized</div>
+    <div id="sl"><div id="slb"></div></div>
+  </div>
+  <div id="root"></div>
+
+  <!-- React 18 -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel standalone — transforms JSX in the browser, no build step needed -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js" crossorigin></script>
+
+  <!-- App — loaded as text/babel so Babel transforms it before execution -->
+  <script type="text/babel" src="app.jsx" data-presets="react"></script>
+
+  <script>
+    // Dismiss splash once app loads
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        var s = document.getElementById('splash');
+        if (s) { s.classList.add('done'); setTimeout(function(){ s.remove(); }, 700); }
+      }, 800);
+    });
+
+    // Service Worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').then(function(reg) {
+        setInterval(function(){ reg.update(); }, 30000);
+        reg.addEventListener('updatefound', function() {
+          var w = reg.installing;
+          w.addEventListener('statechange', function() {
+            if (w.state === 'installed' && navigator.serviceWorker.controller) {
+              w.postMessage({ type: 'SKIP_WAITING' });
+            }
+          });
+        });
+      }).catch(function(){});
+      var refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        if (!refreshing) { refreshing = true; window.location.reload(); }
+      });
+    }
+  </script>
+</body>
+</html>
