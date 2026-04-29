@@ -1,88 +1,121 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,viewport-fit=cover,user-scalable=no,shrink-to-fit=no"/>
-  <link rel="manifest" href="manifest.json"/>
-  <meta name="theme-color" content="#0A0F1E"/>
-  <meta name="mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <meta name="apple-mobile-web-app-title" content="Record Chief"/>
-  <link rel="apple-touch-icon" href="icons/icon-192.png"/>
-  <link rel="apple-touch-icon" sizes="152x152" href="icons/icon-192.png"/>
-  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-192.png"/>
-  <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png"/>
-  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png"/>
-  <meta property="og:title" content="Record Chief"/>
-  <meta property="og:description" content="Track shop sales, farm expenses and debt — built for Nigerian businesses."/>
-  <meta property="og:image" content="icons/icon-512.png"/>
-  <meta property="og:type" content="website"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap"/>
-  <title>Record Chief</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:sans-serif;background:#1E3A8A}
-    #root{min-height:100vh;background:#F8FAFC}
-    #splash{position:fixed;inset:0;z-index:9999;background:linear-gradient(145deg,#1E3A8A,#1D4ED8,#2563EB);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;transition:opacity .6s}
-    #splash.done{opacity:0;pointer-events:none}
-    #si{font-size:64px;margin-bottom:16px;animation:p 1.5s ease-in-out infinite}
-    #st{font-size:28px;font-weight:800;font-family:monospace;letter-spacing:-0.5px}
-    #ss{font-size:13px;opacity:.65;margin-top:8px}
-    #sl{width:120px;height:3px;background:rgba(255,255,255,.2);border-radius:2px;margin-top:24px;overflow:hidden}
-    #slb{height:100%;background:#fff;border-radius:2px;animation:l 2s ease forwards}
-    @keyframes p{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
-    @keyframes l{0%{width:0}100%{width:100%}}
-  </style>
-</head>
-<body>
-  <div id="splash">
-    <div id="si">📒</div>
-    <div id="st">Record Chief</div>
-    <div id="ss">Your business records, organized</div>
-    <div id="sl"><div id="slb"></div></div>
-  </div>
-  <div id="root"></div>
+// Record Chief Service Worker
+const VERSION = "v20260319";
+const CACHE   = "recordchief-" + VERSION;
 
-  <!-- React 18 -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <!-- Babel standalone — transforms JSX in the browser, no build step needed -->
-  <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js" crossorigin></script>
+// All resources to pre-cache on install
+const PRECACHE = [
+  "/",
+  "/index.html",
+  "/app.jsx",
+  "https://unpkg.com/@babel/standalone@7.23.5/babel.min.js",
+  "/manifest.json",
+  "/icons/icon-32.png",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
+  "https://unpkg.com/react@18/umd/react.production.min.js",
+  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
+];
 
-  <!-- App — loaded as text/babel so Babel transforms it before execution -->
-  <script type="text/babel" src="app.jsx" data-presets="react"></script>
+// ── Install: pre-cache everything ──
+self.addEventListener("install", e => {
+  e.waitUntil(
+    caches.open(CACHE).then(c =>
+      Promise.allSettled(PRECACHE.map(url =>
+        c.add(url).catch(err => console.warn("Pre-cache failed:", url, err.message))
+      ))
+    ).then(() => self.skipWaiting())
+  );
+});
 
-  <script>
-    // Dismiss splash once app loads
-    window.addEventListener('load', function() {
-      setTimeout(function() {
-        var s = document.getElementById('splash');
-        if (s) { s.classList.add('done'); setTimeout(function(){ s.remove(); }, 700); }
-      }, 800);
-    });
+// ── Activate: clean old caches, take control ──
+self.addEventListener("activate", e => {
+  e.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(
+        keys.filter(k => k !== CACHE).map(k => caches.delete(k))
+      ))
+      .then(() => self.clients.claim())
+  );
+});
 
-    // Service Worker
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').then(function(reg) {
-        setInterval(function(){ reg.update(); }, 30000);
-        reg.addEventListener('updatefound', function() {
-          var w = reg.installing;
-          w.addEventListener('statechange', function() {
-            if (w.state === 'installed' && navigator.serviceWorker.controller) {
-              w.postMessage({ type: 'SKIP_WAITING' });
-            }
-          });
-        });
-      }).catch(function(){});
-      var refreshing = false;
-      navigator.serviceWorker.addEventListener('controllerchange', function() {
-        if (!refreshing) { refreshing = true; window.location.reload(); }
-      });
-    }
-  </script>
-</body>
-</html>
+// ── Fetch: smart caching strategy ──
+self.addEventListener("fetch", e => {
+  if (e.request.method !== "GET") return;
+  if (e.request.url.startsWith("chrome-extension")) return;
+
+  const url = new URL(e.request.url);
+
+  // Skip backend API calls — always go to network, don't cache
+  if (url.hostname.includes("railway.app") ||
+      url.pathname.startsWith("/api/")) {
+    return; // let browser handle naturally
+  }
+
+  const isCDN = url.hostname.includes("unpkg.com") ||
+                url.hostname.includes("cdnjs") ||
+                url.hostname.includes("fonts.googleapis") ||
+                url.hostname.includes("fonts.gstatic");
+
+  const isAppFile = url.hostname === self.location.hostname && (
+    url.pathname === "/" ||
+    url.pathname.endsWith(".html") ||
+    url.pathname.endsWith(".js") ||
+    url.pathname.endsWith(".json") ||
+    url.pathname.startsWith("/icons/")
+  );
+
+  if (isCDN) {
+    // Cache-first for CDN — never changes
+    e.respondWith(
+      caches.match(e.request).then(hit => {
+        if (hit) return hit;
+        return fetch(e.request).then(res => {
+          if (res && res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        }).catch(() => caches.match(e.request));
+      })
+    );
+  } else if (isAppFile) {
+    // Stale-while-revalidate for app files:
+    // Serve from cache immediately (fast), update cache in background
+    e.respondWith(
+      caches.open(CACHE).then(cache =>
+        cache.match(e.request).then(cached => {
+          const networkFetch = fetch(e.request).then(res => {
+            if (res && res.ok) cache.put(e.request, res.clone());
+            return res;
+          }).catch(() => null);
+
+          // Return cached immediately if available, otherwise wait for network
+          return cached || networkFetch;
+        })
+      )
+    );
+  } else {
+    // Everything else: network with cache fallback
+    e.respondWith(
+      fetch(e.request)
+        .then(res => {
+          if (res && res.ok && res.type !== "opaque") {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        })
+        .catch(() => {
+          if (e.request.mode === "navigate") {
+            return caches.match("/index.html");
+          }
+          return caches.match(e.request);
+        })
+    );
+  }
+});
+
+// ── Message handler ──
+self.addEventListener("message", e => {
+  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
+});
