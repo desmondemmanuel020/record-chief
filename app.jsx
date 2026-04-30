@@ -361,30 +361,66 @@ const css = `
 `;
 
 function useLocalState(key, init) {
+  // Business data keys (inventory, sales, etc.) → IDB primary
+  // Settings/auth keys → localStorage only
+  const isBiz = typeof isBusinessKey === "function" && isBusinessKey(key);
+
   const [val, setVal] = useState(() => {
     try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : (typeof init === "function" ? init() : init); } catch { return typeof init === "function" ? init() : init; }
   });
 
-  // Re-hydrate from localStorage whenever sync pulls new data
   useEffect(() => {
+    let active = true;
+    // Hydrate business keys from IDB on mount
+    if (isBiz) {
+      IDB.get(key).then(v => {
+        if (!active) return;
+        if (v !== undefined && v !== null) {
+          setVal(v);
+        } else {
+          // Migrate from localStorage to IDB on first run
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw !== null) {
+              const parsed = JSON.parse(raw);
+              IDB.set(key, parsed).catch(() => {});
+              setVal(parsed);
+            }
+          } catch {}
+        }
+      }).catch(() => {});
+    }
+
+    // Re-hydrate on server sync
     const handler = () => {
-      try {
-        const s = localStorage.getItem(key);
-        if (s !== null) setVal(JSON.parse(s));
-      } catch {}
+      if (isBiz) {
+        IDB.get(key).then(v => {
+          if (active && v !== undefined && v !== null) setVal(v);
+        }).catch(() => {
+          try { const s = localStorage.getItem(key); if (s && active) setVal(JSON.parse(s)); } catch {}
+        });
+      } else {
+        try { const s = localStorage.getItem(key); if (s && active) setVal(JSON.parse(s)); } catch {}
+      }
     };
     window.addEventListener("rc_sync_update", handler);
-    return () => window.removeEventListener("rc_sync_update", handler);
-  }, [key]);
+    return () => { active = false; window.removeEventListener("rc_sync_update", handler); };
+  }, [key, isBiz]);
 
   const update = useCallback((v) => {
     setVal(prev => {
       const next = typeof v === "function" ? v(prev) : v;
       try {
-        localStorage.setItem(key, JSON.stringify(next));
-        IDB.set(key, next).catch(() => {});
-        // Trigger immediate push after data write (debounced via shared timer)
-        if (typeof window !== "undefined") {
+        if (isBiz) {
+          // Business data: IDB primary, localStorage mirror
+          IDB.set(key, next).catch(() => {});
+          try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+        } else {
+          // Settings/auth: localStorage only
+          localStorage.setItem(key, JSON.stringify(next));
+        }
+        // Debounced push sync for business data
+        if (isBiz) {
           clearTimeout(window.__rcSyncTimer);
           window.__rcSyncTimer = setTimeout(() => {
             const _tok = localStorage.getItem("rc_token");
@@ -395,7 +431,8 @@ function useLocalState(key, init) {
       } catch {}
       return next;
     });
-  }, [key]);
+  }, [key, isBiz]);
+
   return [val, update];
 }
 
@@ -699,68 +736,109 @@ function MiniBarChart({ data, color, label }) {
 // IndexedDB wrapper   faster, larger capacity than localStorage
 // Falls back to localStorage silently if IDB not available
 //                                                        
+// ── Business data keys stored in IndexedDB, not localStorage ──
+const BKEYS = ["sl_inv_","sl_shopsales_","sl_farm_","sl_debt_","sl_sales_","sl_farms_","sl_sales_groups_","sl_sales_fields_"];
+const isBusinessKey = k => BKEYS.some(p => k.startsWith(p));
+
 const IDB = (() => {
   const DB_NAME = "RecordChief";
-  const DB_VER  = 1;
-  const STORE   = "data";
+  const DB_VER  = 2;
+  const STORE   = "bizdata";
   let _db = null;
+  let _ready = false;
+  let _failed = false;
 
   const open = () => new Promise((res, rej) => {
     if (_db) return res(_db);
-    if (!window.indexedDB && !window.mozIndexedDB && !window.webkitIndexedDB) {
-        return rej(new Error("IDB not available"));
-      }
-      const idb = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB;
-    const req = (window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB).open(DB_NAME, DB_VER);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
-    req.onsuccess = e => { _db = e.target.result; res(_db); };
-    req.onerror   = e => rej(e.target.error);
+    if (_failed) return rej(new Error("IDB unavailable"));
+    const idb = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB;
+    if (!idb) { _failed = true; return rej(new Error("No IDB")); }
+    const req = idb.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      // Migrate from old store name
+      if (db.objectStoreNames.contains("data")) db.deleteObjectStore("data");
+    };
+    req.onsuccess = e => { _db = e.target.result; _ready = true; res(_db); };
+    req.onerror   = e => { _failed = true; rej(e.target.error); };
+    req.onblocked = () => { _failed = true; rej(new Error("IDB blocked")); };
   });
+
+  const idbGet = async (key) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE, "readonly");
+      const r  = tx.objectStore(STORE).get(key);
+      r.onsuccess = () => res(r.result);
+      r.onerror   = () => rej(r.error);
+    });
+  };
+  const idbSet = async (key, val) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const r  = tx.objectStore(STORE).put(val, key);
+      r.onsuccess = () => res();
+      r.onerror   = () => rej(r.error);
+    });
+  };
+  const idbDel = async (key) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const r  = tx.objectStore(STORE).delete(key);
+      r.onsuccess = () => res();
+      r.onerror   = () => rej(r.error);
+    });
+  };
 
   return {
     async get(key) {
-      try {
-        const db = await open();
-        return new Promise((res, rej) => {
-          const tx  = db.transaction(STORE, "readonly");
-          const req = tx.objectStore(STORE).get(key);
-          req.onsuccess = () => res(req.result);
-          req.onerror   = () => rej(req.error);
-        });
-      } catch(e) {
-        // fallback to localStorage
-        try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : undefined; } catch { return undefined; }
+      try { return await idbGet(key); }
+      catch {
+        // IDB failed — fall back to localStorage
+        try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : undefined; }
+        catch { return undefined; }
       }
     },
     async set(key, value) {
-      try {
-        const db = await open();
-        return new Promise((res, rej) => {
-          const tx  = db.transaction(STORE, "readwrite");
-          const req = tx.objectStore(STORE).put(value, key);
-          req.onsuccess = () => res();
-          req.onerror   = () => rej(req.error);
-        });
-      } catch(e) {
-        // fallback to localStorage
+      try { await idbSet(key, value); }
+      catch {
         try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
       }
     },
     async del(key) {
-      try {
-        const db = await open();
-        return new Promise((res, rej) => {
-          const tx  = db.transaction(STORE, "readwrite");
-          const req = tx.objectStore(STORE).delete(key);
-          req.onsuccess = () => res();
-          req.onerror   = () => rej(req.error);
-        });
-      } catch(e) {
-        localStorage.removeItem(key);
-      }
+      try { await idbDel(key); } catch {}
+      try { localStorage.removeItem(key); } catch {}
     },
   };
 })();
+
+// ── Helper: read business data (IDB primary, localStorage fallback) ──
+async function bizGet(key) {
+  const val = await IDB.get(key);
+  if (val !== undefined) return val;
+  // Not in IDB yet — check localStorage (migration path)
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw !== null) {
+      const parsed = JSON.parse(raw);
+      // Migrate to IDB and clean localStorage
+      await IDB.set(key, parsed);
+      localStorage.removeItem(key);
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
+// ── Helper: write business data to IDB (no localStorage) ──
+async function bizSet(key, value) {
+  await IDB.set(key, value);
+  // Keep localStorage in sync for any code still reading it directly
+  // (we'll eliminate these reads progressively)
+}
 
 //    Sync conflict log                                  
 // Tracks when local data was kept over server data
@@ -813,7 +891,7 @@ const DEMO_SALES_ENTRIES = [
   { id:"se2", f_date:"2026-03-20", f_name:"Bello Farms",  f_phone:"07041235678", f_product:"Semovita x10",     f_amount:"32000", f_notes:"Bulk discount applied",          createdAt:"2026-03-20T10:00:00Z" },
 ];
 
-function loadDemoData() {
+async function loadDemoData() {
   const uid = DEMO_USER.uid;
   localStorage.setItem(`sl_inv_${uid}`,          JSON.stringify(DEMO_INVENTORY));
   localStorage.setItem(`sl_shopsales_${uid}`,    JSON.stringify(DEMO_SALES));
@@ -823,9 +901,11 @@ function loadDemoData() {
   localStorage.setItem(`sl_sales_fields_${uid}`, JSON.stringify(null));
   localStorage.setItem("rc_demo_mode",           "1");
 }
-function clearDemoData() {
+async function clearDemoData() {
   const uid = DEMO_USER.uid;
-  ["sl_inv_","sl_shopsales_","sl_farm_","sl_debt_","sl_sales_","sl_sales_fields_"].forEach(k => localStorage.removeItem(k+uid));
+  const keys = ["sl_inv_","sl_shopsales_","sl_farm_","sl_debt_","sl_sales_","sl_sales_fields_","sl_sales_groups_","sl_farms_"];
+  await Promise.all(keys.map(k => IDB.del(k + uid).catch(() => {})));
+  keys.forEach(k => { try { localStorage.removeItem(k + uid); } catch {} });
   localStorage.removeItem("rc_demo_mode");
 }
 
@@ -995,10 +1075,13 @@ const AuthAPI = {
   },
 
   async signOut() {
+    // Clear business data from IDB on logout (not personal device? optional)
+    // We keep rc_offline_* keys so user can log back in offline
+    // Business data in IDB stays — re-populated on next login from server
     localStorage.removeItem("rc_token");
     localStorage.removeItem("rc_session");
     localStorage.removeItem("sl_user");
-    // Note: we keep rc_offline_* keys so user can still log back in offline
+    localStorage.removeItem("rc_last_sync");
   },
 
   async resetPassword(email) {
@@ -1022,10 +1105,14 @@ const AuthAPI = {
     try {
       // Read from IDB first, fall back to localStorage
       const read = async (lsKey) => {
-        const idbVal = await IDB.get(lsKey);
-        if (idbVal !== undefined) return idbVal;
-        const raw = localStorage.getItem(lsKey);
-        return raw ? JSON.parse(raw) : null;
+        try {
+          const idbVal = await IDB.get(lsKey);
+          if (idbVal !== undefined && idbVal !== null) return idbVal;
+        } catch {}
+        try {
+          const raw = localStorage.getItem(lsKey);
+          return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
       };
 
       const [inv, sales, farm, entries, salesGroups, fields, debt] = await Promise.all([
@@ -1698,77 +1785,67 @@ function HomeScreen({ user, sector, onSetSector, onManageSectors, onViewOverview
 function SalesRepScreen({ user }) {
   const storageKey  = `sl_sales_${user.uid}`;
   const fieldsKey   = `sl_sales_fields_${user.uid}`;
-  const groupsKey   = `sl_sales_groups_${user.uid}`; // archived groups
+  const groupsKey   = `sl_sales_groups_${user.uid}`;
 
-  // Groups = array of { id, name, fields[], entries[] }    archived sets
   const [groups,  setGroups]  = useLocalState(groupsKey, []);
-  // Active entries (current group)
   const [entries, setEntries] = useLocalState(storageKey, []);
-  // Active fields (current group)
   const [fields,  setFields]  = useLocalState(fieldsKey, null);
 
   const defaultFields = [
     { id: "f_date",  name: "Date",  type: "Date" },
     { id: "f_notes", name: "Notes", type: "Text" },
   ];
-  const activeFields = fields || defaultFields;
+  const activeFields  = fields || defaultFields;
+  const orderedFields = activeFields;
 
   const [search,          setSearch]          = useState("");
   const [toast,           setToast]           = useState(null);
   const [form,            setForm]            = useState({});
   const [errors,          setErrors]          = useState({});
   const [editId,          setEditId]          = useState(null);
-  const [setupMode,       setSetupMode]       = useState(false);
+  const [setupMode,       setSetupMode]       = useState(!fields);
   const [draftFields,     setDraftFields]     = useState([]);
   const [showExport,      setShowExport]      = useState(false);
   const [showEntryForm,   setShowEntryForm]   = useState(false);
-  const [sortBy,          setSortBy]          = useState("date_desc");
   const [showManageFields,setShowManageFields]= useState(false);
   const [viewEntry,       setViewEntry]       = useState(null);
   const [newGroupName,    setNewGroupName]    = useState("");
   const [showNewGroup,    setShowNewGroup]    = useState(false);
+  const [sortBy,          setSortBy]          = useState("date_desc");
 
   const showToast = (msg, type="success") => setToast({ msg, type });
 
-  //    Create new group: archive current entries+fields   fresh slate   
   const createNewGroup = () => {
-    const name = newGroupName.trim() || `Group ${(groups.length || 0) + 1}`;
-    // Archive existing entries+fields into a group
-    if (entries.length > 0 || (fields && fields.length > 0)) {
-      const archived = {
-        id:        uid(),
-        name,
-        fields:    fields || defaultFields,
-        entries:   entries,
-        createdAt: TS(),
-      };
-      setGroups(prev => [archived, ...(prev || [])]);
+    const name = newGroupName.trim() || `Group ${(groups||[]).length + 1}`;
+    if (entries.length > 0 || fields) {
+      const archived = { id: uid(), name, fields: fields || defaultFields, entries, createdAt: TS() };
+      setGroups(prev => [archived, ...(prev||[])]);
     }
-    // Reset current to blank
     setEntries([]);
     setFields(null);
     setForm({});
+    setSetupMode(true);
     setNewGroupName("");
     setShowNewGroup(false);
-    showToast(`"${name}" archived. New group started.`);
+    showToast(`"${name}" archived. Set up fields for new group.`);
   };
 
-  //    Save fields for current group   
   const saveCurrentFields = (combined) => {
     setFields(combined);
     setDraftFields([]);
     setSetupMode(false);
     setShowManageFields(false);
+    setShowEntryForm(false);
     showToast("Fields saved!");
   };
 
   const saveEntry = () => {
     const e = {};
     activeFields.forEach(f => {
-      if (!form[f.id] && f.id !== "f_notes") e[f.id] = `${f.name} is required`;
+      if (!form[f.id] && f.id !== "f_notes" && f.id !== "f_date") e[f.id] = `${f.name} is required`;
     });
     if (Object.keys(e).length) { setErrors(e); return; }
-    const entry = { id: editId || uid(), ...form, createdAt: TS() };
+    const entry = { id: editId || uid(), ...form, createdAt: editId ? (entries.find(x=>x.id===editId)?.createdAt||TS()) : TS() };
     if (editId) {
       setEntries(prev => prev.map(x => x.id === editId ? entry : x));
       setEditId(null); showToast("Entry updated!");
@@ -1779,33 +1856,21 @@ function SalesRepScreen({ user }) {
     setForm({}); setErrors({}); setShowEntryForm(false);
   };
 
-  const deleteEntry = (id) => {
-    setEntries(prev => prev.filter(e => e.id !== id));
-    showToast("Deleted", "error");
-  };
-
+  const deleteEntry = (id) => { setEntries(prev => prev.filter(e => e.id !== id)); showToast("Deleted","error"); };
   const openEdit = (entry) => {
-    setEditId(entry.id); setForm(entry);
-    setShowEntryForm(true);
-    activeFields.forEach(f => { if (f.type === "Date" && !entry[f.id]) setForm(p => ({...p, [f.id]: TODAY()})); });
+    setEditId(entry.id); setForm({...entry}); setShowEntryForm(true); setSetupMode(false); setShowManageFields(false);
   };
 
-  // Sorted current entries
-  const orderedFields = activeFields;
   const dateId  = activeFields.find(f => f.type === "Date")?.id || "f_date";
   const firstId = orderedFields[0]?.id;
 
   const filtered = [...entries]
     .filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()))
     .sort((a,b) => {
-      switch(sortBy) {
-        case "date_desc": return (a[dateId]||a.createdAt) > (b[dateId]||b.createdAt) ? -1 : 1;
-        case "date_asc":  return (a[dateId]||a.createdAt) < (b[dateId]||b.createdAt) ? -1 : 1;
-        case "name_asc":  return (a[firstId]||"").localeCompare(b[firstId]||"");
-        case "name_desc": return (b[firstId]||"").localeCompare(a[firstId]||"");
-        case "newest":    return new Date(b.createdAt)-new Date(a.createdAt);
-        default: return 0;
-      }
+      if (sortBy === "date_asc")  return (a[dateId]||"") < (b[dateId]||"") ? -1 : 1;
+      if (sortBy === "name_asc")  return (a[firstId]||"").localeCompare(b[firstId]||"");
+      if (sortBy === "name_desc") return (b[firstId]||"").localeCompare(a[firstId]||"");
+      return (a[dateId]||a.createdAt||"") > (b[dateId]||b.createdAt||"") ? -1 : 1; // date_desc default
     });
 
   return (
@@ -1815,190 +1880,171 @@ function SalesRepScreen({ user }) {
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:"var(--text)" }}>👥 Customer Records</div>
           <div style={{ fontSize:12, color:"var(--text-muted)" }}>
-            {entries.length} record{entries.length!==1?"s":""}{groups.length>0 ? ` · ${groups.length} archived group${groups.length!==1?"s":""}` : ""}
+            {entries.length} record{entries.length!==1?"s":""}{(groups||[]).length>0 ? ` · ${groups.length} archived group${groups.length!==1?"s":""}` : ""}
           </div>
         </div>
         <div style={{ display:"flex", gap:6 }}>
           <button className="btn btn-success btn-sm" onClick={() => setShowExport(true)}>
-            <Icon name="download" size={14} /> Export
+            <Icon name="download" size={14}/> Export
           </button>
-          <button className="btn btn-sm" onClick={() => setShowNewGroup(true)}
+          <button onClick={() => setShowNewGroup(true)}
             style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"6px 12px", borderRadius:8, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
             + New Group
           </button>
         </div>
       </div>
 
-      {/* Group tabs — current + all archived */}
-      {groups.length > 0 && (
+      {/* Archived group pills */}
+      {(groups||[]).length > 0 && (
         <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:"0.75rem", paddingBottom:4, scrollbarWidth:"none" }}>
-          <div style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, background:"var(--primary)", color:"#fff", fontSize:12, fontWeight:700 }}>
-            📋 Current
-          </div>
+          <div style={{ flexShrink:0, padding:"5px 12px", borderRadius:20, background:"var(--primary)", color:"#fff", fontSize:12, fontWeight:700 }}>📋 Current</div>
           {(groups||[]).map(grp => (
-            <div key={grp.id} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, background:"var(--surface)", border:"1px solid var(--border)", fontSize:12, fontWeight:600, color:"var(--text-muted)", whiteSpace:"nowrap" }}>
-              📁 {grp.name} ({grp.entries?.length||0})
+            <div key={grp.id} style={{ flexShrink:0, padding:"5px 12px", borderRadius:20, background:"var(--surface)", border:"1px solid var(--border)", fontSize:12, fontWeight:600, color:"var(--text-muted)", whiteSpace:"nowrap" }}>
+              📁 {grp.name} ({(grp.entries||[]).length})
             </div>
           ))}
         </div>
       )}
 
       {/* Fields setup prompt */}
-      {!fields && (
-        <div className="card" style={{ marginBottom:"0.75rem", textAlign:"center", padding:"1.5rem" }}>
+      {setupMode && !showEntryForm && (
+        <div className="card" style={{ textAlign:"center", padding:"1.5rem" }}>
           <div style={{ fontSize:32, marginBottom:8 }}>🛠️</div>
           <div style={{ fontSize:14, fontWeight:700, color:"var(--text)", marginBottom:6 }}>Set up your record fields</div>
           <div style={{ fontSize:12, color:"var(--text-muted)", marginBottom:14, lineHeight:1.6 }}>
-            Define the columns for this group (e.g. Customer Name, Product, Amount).
+            Define the columns for this group (e.g. Name, Product, Amount).
           </div>
-          <button className="btn btn-primary" onClick={() => { setSetupMode(true); setShowEntryForm(true); }}>
+          <button className="btn btn-primary" onClick={() => { setSetupMode(true); setDraftFields([{id:uid(),name:"",type:"Text"}]); setShowEntryForm(true); }}>
             ⚙️ Set Up Fields
           </button>
         </div>
       )}
 
-      {/* Manage fields row */}
-      {fields && (
+      {/* Active fields display */}
+      {fields && !setupMode && (
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:"0.6rem", flexWrap:"wrap" }}>
-          <div style={{ display:"flex", gap:4, flex:1, flexWrap:"wrap" }}>
-            {activeFields.filter(f=>f.id!=="f_notes").map(f=>(
-              <span key={f.id} style={{ background:"var(--bg)", border:"1px solid var(--border)", borderRadius:6, padding:"3px 8px", fontSize:11, fontWeight:600, color:"var(--text-muted)" }}>
-                {f.name}
-              </span>
-            ))}
-          </div>
-          <button onClick={() => { setDraftFields(activeFields.filter(f=>f.id!=="f_date"&&f.id!=="f_notes")); setShowManageFields(true); setShowEntryForm(true); }}
-            style={{ background:"none", border:"none", color:"var(--primary)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Inter',sans-serif", whiteSpace:"nowrap" }}>
+          {activeFields.filter(f=>f.id!=="f_notes"&&f.id!=="f_date").map(f=>(
+            <span key={f.id} style={{ background:"var(--bg)", border:"1px solid var(--border)", borderRadius:6, padding:"3px 8px", fontSize:11, fontWeight:600, color:"var(--text-muted)" }}>{f.name}</span>
+          ))}
+          <button onClick={() => { setDraftFields(activeFields.filter(f=>f.id!=="f_date"&&f.id!=="f_notes")); setShowManageFields(true); setShowEntryForm(true); setSetupMode(false); }}
+            style={{ background:"none", border:"none", color:"var(--primary)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
             ✏️ Edit fields
           </button>
         </div>
       )}
 
       {/* Search + sort */}
-      <SmartSearch value={search} onChange={setSearch} placeholder="Search records…" resultCount={filtered.length} />
-      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:"0.75rem" }}>
-        <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="form-input" style={{ flex:1, padding:"9px 12px", fontSize:13 }}>
-          <option value="date_desc">📅 Newest date</option>
-          <option value="date_asc">📅 Oldest date</option>
-          <option value="name_asc">🔤 A → Z</option>
-          <option value="name_desc">🔤 Z → A</option>
-          <option value="newest">🕐 Recently added</option>
-        </select>
-      </div>
+      {fields && !setupMode && <>
+        <SmartSearch value={search} onChange={setSearch} placeholder="Search records…" resultCount={filtered.length}/>
+        <div style={{ marginBottom:"0.75rem" }}>
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="form-input" style={{ padding:"9px 12px", fontSize:13 }}>
+            <option value="date_desc">📅 Newest date</option>
+            <option value="date_asc">📅 Oldest date</option>
+            <option value="name_asc">🔤 A → Z</option>
+            <option value="name_desc">🔤 Z → A</option>
+          </select>
+        </div>
+      </>}
 
       {/* Archived groups */}
-      {(groups||[]).map((grp) => {
-        const grpFiltered = (grp.entries||[]).filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()));
-        if (grpFiltered.length === 0 && search) return null;
+      {(groups||[]).map(grp => {
         const gFields = grp.fields || defaultFields;
         const gFirst  = gFields[0];
+        const grpFiltered = (grp.entries||[]).filter(e => !search || JSON.stringify(e).toLowerCase().includes(search.toLowerCase()));
+        if (grpFiltered.length === 0 && search) return null;
         return (
           <div key={grp.id} style={{ marginBottom:"1rem" }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
               <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                📁 {grp.name} · {grp.entries?.length||0} record{(grp.entries?.length||0)!==1?"s":""}
+                📁 {grp.name} · {(grp.entries||[]).length} record{(grp.entries||[]).length!==1?"s":""}
               </div>
-              <button onClick={() => {
-                setGroups(prev => (prev||[]).filter(g => g.id !== grp.id));
-                showToast(`"${grp.name}" deleted`,"error");
-              }} style={{ background:"none", border:"none", color:COLORS.danger, fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>
-                Delete group
-              </button>
+              <button onClick={() => { setGroups(prev=>(prev||[]).filter(g=>g.id!==grp.id)); showToast(`"${grp.name}" deleted`,"error"); }}
+                style={{ background:"none", border:"none", color:COLORS.danger, fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif" }}>Delete group</button>
             </div>
             <div className="card" style={{ padding:0, overflow:"hidden" }}>
               {grpFiltered.slice(0,5).map((e,i) => (
                 <div key={e.id||i} style={{ padding:"10px 14px", borderBottom:i<Math.min(grpFiltered.length,5)-1?`0.5px solid var(--border)`:"none", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                   <div>
-                    <div style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{gFirst?(e[gFirst.id]||"—"):"—"}</div>
-                    <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
-                      {gFields.slice(1,3).map(f=>e[f.id]).filter(Boolean).join(" · ")}
-                    </div>
+                    <div style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{gFirst ? (e[gFirst.id]||"—") : "—"}</div>
+                    <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>{gFields.slice(1,3).map(f=>e[f.id]).filter(Boolean).join(" · ")}</div>
                   </div>
-                  <div style={{ fontSize:11, color:"var(--text-muted)" }}>{e.f_date||e.date||""}</div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)" }}>{e.f_date||""}</div>
                 </div>
               ))}
-              {grpFiltered.length>5 && (
-                <div style={{ padding:"8px 14px", fontSize:12, color:"var(--primary)", fontWeight:600 }}>+{grpFiltered.length-5} more records</div>
-              )}
+              {grpFiltered.length > 5 && <div style={{ padding:"8px 14px", fontSize:12, color:"var(--primary)", fontWeight:600 }}>+{grpFiltered.length-5} more</div>}
             </div>
           </div>
         );
       })}
 
-      {/* Current records header */}
-      {entries.length > 0 && groups.length > 0 && (
-        <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
-          📋 Current Records
-        </div>
-      )}
-
-      {/* Current entries list */}
-      {filtered.length === 0 && entries.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-icon">👥</div>
-          <h3>No records yet</h3>
-          <p>Tap + to add your first customer record</p>
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="empty-state"><h3>No results</h3><p>Try a different search</p></div>
-      ) : (
-        <div className="card">
-          {filtered.map(entry => {
-            const customFields = activeFields.filter(f => f.id !== "f_date" && f.id !== "f_notes");
-            const mainField = customFields[0] || activeFields[0];
-            const subField  = customFields[1] || activeFields[1];
-            const amtField  = customFields.find(f => f.type === "Number") || customFields[customFields.length-1];
-            const dateF     = activeFields.find(f => f.type === "Date") || { id:"f_date" };
-            return (
-              <div key={entry.id} className="entry-row">
-                <div style={{ width:36, height:36, borderRadius:10, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, color:"var(--primary)", flexShrink:0 }}>
-                  {String(entry[mainField?.id]||"?")[0]?.toUpperCase()||"?"}
-                </div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div className="entry-title">{entry[mainField?.id]||"—"}</div>
-                  <div className="entry-sub">{[entry[subField?.id], entry[dateF.id]].filter(Boolean).join(" · ")}</div>
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
-                  {amtField && entry[amtField.id] && (
-                    <div className="entry-amount">{amtField.type==="Number"?NAIRA(entry[amtField.id]):entry[amtField.id]}</div>
-                  )}
-                  <div style={{ display:"flex", gap:4 }}>
-                    <button className="btn btn-sm" onClick={() => setViewEntry(entry)}
-                      style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"5px 9px", borderRadius:7, fontSize:12, fontWeight:700, cursor:"pointer" }}>
-                      View
-                    </button>
-                    <button className="btn btn-sm btn-outline" onClick={() => openEdit(entry)}><Icon name="edit" size={13}/></button>
-                    <button className="btn btn-sm btn-danger" onClick={() => deleteEntry(entry.id)}><Icon name="trash" size={13}/></button>
+      {/* Current entries */}
+      {fields && !setupMode && (
+        <>
+          {(groups||[]).length > 0 && entries.length > 0 && (
+            <div style={{ fontSize:12, fontWeight:700, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>📋 Current Records</div>
+          )}
+          {filtered.length === 0 && entries.length === 0 ? (
+            <div className="empty-state"><div className="empty-icon">👥</div><h3>No records yet</h3><p>Tap + to add your first record</p></div>
+          ) : filtered.length === 0 ? (
+            <div className="empty-state"><h3>No results</h3><p>Try a different search</p></div>
+          ) : (
+            <div className="card">
+              {filtered.map(entry => {
+                const customFields = activeFields.filter(f=>f.id!=="f_date"&&f.id!=="f_notes");
+                const mainF = customFields[0] || activeFields[0];
+                const subF  = customFields[1] || activeFields[1];
+                const amtF  = customFields.find(f=>f.type==="Number");
+                const dtF   = activeFields.find(f=>f.type==="Date") || {id:"f_date"};
+                return (
+                  <div key={entry.id} className="entry-row">
+                    <div style={{ width:36, height:36, borderRadius:10, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, color:"var(--primary)", flexShrink:0 }}>
+                      {String(entry[mainF?.id]||"?")[0]?.toUpperCase()||"?"}
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div className="entry-title">{entry[mainF?.id]||"—"}</div>
+                      <div className="entry-sub">{[entry[subF?.id], entry[dtF.id]].filter(Boolean).join(" · ")}</div>
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
+                      {amtF && entry[amtF.id] && <div className="entry-amount">{NAIRA(entry[amtF.id])}</div>}
+                      <div style={{ display:"flex", gap:4 }}>
+                        <button onClick={()=>setViewEntry(entry)}
+                          style={{ background:"var(--primary-light)", color:"var(--primary)", border:"none", padding:"5px 9px", borderRadius:7, fontSize:12, fontWeight:700, cursor:"pointer" }}>View</button>
+                        <button className="btn btn-sm btn-outline" onClick={()=>openEdit(entry)}><Icon name="edit" size={13}/></button>
+                        <button className="btn btn-sm btn-danger" onClick={()=>deleteEntry(entry.id)}><Icon name="trash" size={13}/></button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {/* FAB */}
-      <button onClick={() => { setShowEntryForm(true); setEditId(null); setForm({}); setErrors({}); setShowManageFields(false); setSetupMode(!fields); }}
+      <button onClick={() => {
+          if (!fields) { setSetupMode(true); setDraftFields([{id:uid(),name:"",type:"Text"}]); }
+          else { setSetupMode(false); setShowManageFields(false); }
+          setEditId(null); setForm({}); setErrors({}); setShowEntryForm(true);
+        }}
         style={{ position:"fixed", bottom:"calc(28px + var(--fab-lift,0px))", right:28, zIndex:200, width:56, height:56, borderRadius:"50%", background:"linear-gradient(135deg,#5B21B6,#7C3AED)", color:"#fff", border:"none", boxShadow:"0 4px 18px rgba(124,58,237,0.45)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
       </button>
 
       {/* New Group modal */}
       {showNewGroup && (
-        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
-          onClick={() => setShowNewGroup(false)}>
-          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:380, animation:"scaleIn 0.2s ease" }}
-            onClick={e => e.stopPropagation()}>
+        <div style={{ position:"fixed", inset:0, zIndex:500, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setShowNewGroup(false)}>
+          <div style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:380, animation:"scaleIn 0.2s ease" }} onClick={e=>e.stopPropagation()}>
             <div style={{ fontSize:17, fontWeight:800, color:"var(--text)", marginBottom:6 }}>📁 Start New Group</div>
             <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:16, lineHeight:1.6 }}>
-              Current records ({entries.length}) will be archived under the name you give them. You'll start fresh with a new set of fields.
+              Current records ({entries.length}) will be archived. You'll define new fields for the next group.
             </div>
-            <label className="form-label">Name for the current group</label>
-            <input className="form-input" placeholder={`e.g. Jan 2026 Sales, Old Customers…`}
-              value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
-              onKeyDown={e => e.key==="Enter" && createNewGroup()} autoFocus style={{ marginBottom:16 }}/>
+            <label className="form-label">Name for current group</label>
+            <input className="form-input" placeholder="e.g. Jan 2026 Clients, Q1 Sales…"
+              value={newGroupName} onChange={e=>setNewGroupName(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&createNewGroup()} autoFocus style={{ marginBottom:16 }}/>
             <div style={{ display:"flex", gap:10 }}>
-              <button className="btn btn-outline" style={{ flex:1 }} onClick={() => setShowNewGroup(false)}>Cancel</button>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>setShowNewGroup(false)}>Cancel</button>
               <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={createNewGroup}>
                 📁 Archive & Start New
               </button>
@@ -2007,39 +2053,38 @@ function SalesRepScreen({ user }) {
         </div>
       )}
 
-      {/* Entry / Fields form bottom sheet */}
+      {/* Entry / Fields form */}
       {showEntryForm && (
         <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}
-          onClick={() => { setShowEntryForm(false); setSetupMode(false); setShowManageFields(false); setEditId(null); setForm({}); }}>
+          onClick={()=>{ setShowEntryForm(false); setSetupMode(!fields); setShowManageFields(false); setEditId(null); setForm({}); }}>
           <div style={{ background:"var(--surface)", borderRadius:"22px 22px 0 0", width:"100%", maxWidth:520, maxHeight:"88vh", overflow:"hidden", display:"flex", flexDirection:"column" }}
-            onClick={e => e.stopPropagation()}>
+            onClick={e=>e.stopPropagation()}>
             <div style={{ padding:"18px 18px 10px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
               <div style={{ fontSize:16, fontWeight:800, color:"var(--text)" }}>
                 {setupMode ? "⚙️ Set Up Fields" : showManageFields ? "✏️ Edit Fields" : editId ? "Edit Record" : "New Record"}
               </div>
-              <button onClick={() => { setShowEntryForm(false); setSetupMode(false); setShowManageFields(false); setEditId(null); setForm({}); }}
+              <button onClick={()=>{ setShowEntryForm(false); setSetupMode(!fields); setShowManageFields(false); setEditId(null); setForm({}); }}
                 style={{ background:"var(--bg)", border:"none", width:30, height:30, borderRadius:"50%", cursor:"pointer", fontSize:18, color:"var(--text-muted)" }}>×</button>
             </div>
-
             <div style={{ flex:1, overflowY:"auto", padding:"14px 18px" }}>
               {(setupMode || showManageFields) ? (
                 <div>
                   <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14, lineHeight:1.6 }}>
-                    Define the columns for this group. Date and Notes are always included.
+                    Define your columns. Date and Notes are always included.
                   </div>
-                  {draftFields.map((f,i) => (
+                  {(draftFields||[]).map((f,i) => (
                     <div key={f.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
-                      <input className="form-input" style={{ flex:1 }} placeholder={`Field name`}
-                        value={f.name} onChange={e => setDraftFields(prev => prev.map((x,j)=>j===i?{...x,name:e.target.value}:x))} />
+                      <input className="form-input" style={{ flex:1 }} placeholder="Field name"
+                        value={f.name} onChange={e=>setDraftFields(prev=>prev.map((x,j)=>j===i?{...x,name:e.target.value}:x))}/>
                       <select className="form-input" style={{ width:90 }} value={f.type}
-                        onChange={e => setDraftFields(prev => prev.map((x,j)=>j===i?{...x,type:e.target.value}:x))}>
+                        onChange={e=>setDraftFields(prev=>prev.map((x,j)=>j===i?{...x,type:e.target.value}:x))}>
                         <option>Text</option><option>Number</option><option>Date</option><option>Yes/No</option>
                       </select>
                       <button className="btn btn-danger btn-sm" onClick={()=>setDraftFields(prev=>prev.filter((_,j)=>j!==i))}><Icon name="trash" size={13}/></button>
                     </div>
                   ))}
                   <button className="btn btn-outline btn-sm" style={{ width:"100%", marginTop:4 }}
-                    onClick={()=>setDraftFields(prev=>[...prev,{id:uid(),name:"",type:"Text"}])}>
+                    onClick={()=>setDraftFields(prev=>[...(prev||[]),{id:uid(),name:"",type:"Text"}])}>
                     <Icon name="plus" size={13}/> Add field
                   </button>
                 </div>
@@ -2048,20 +2093,20 @@ function SalesRepScreen({ user }) {
                   {activeFields.map(f => (
                     <div key={f.id} className="form-group">
                       <label className="form-label">{f.name}</label>
-                      {f.type === "Date" ? (
+                      {f.type==="Date" ? (
                         <input type="date" className={`form-input${errors[f.id]?" error":""}`}
-                          value={form[f.id]||TODAY()} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
-                      ) : f.type === "Number" ? (
+                          value={form[f.id]||TODAY()} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}}/>
+                      ) : f.type==="Number" ? (
                         <input type="number" className={`form-input${errors[f.id]?" error":""}`} placeholder="0"
-                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
-                      ) : f.type === "Yes/No" ? (
+                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}}/>
+                      ) : f.type==="Yes/No" ? (
                         <select className="form-input" value={form[f.id]||""}
                           onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}}>
                           <option value="">Select</option><option>Yes</option><option>No</option>
                         </select>
                       ) : (
                         <input className={`form-input${errors[f.id]?" error":""}`} placeholder={`Enter ${f.name}`}
-                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}} />
+                          value={form[f.id]||""} onChange={e=>{setForm(p=>({...p,[f.id]:e.target.value}));setErrors(p=>({...p,[f.id]:null}));}}/>
                       )}
                       {errors[f.id] && <div className="form-error">{errors[f.id]}</div>}
                     </div>
@@ -2069,20 +2114,16 @@ function SalesRepScreen({ user }) {
                 </div>
               )}
             </div>
-
             <div style={{ padding:"12px 18px 20px", borderTop:`1px solid var(--border)`, flexShrink:0, display:"flex", gap:10 }}>
-              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>{setShowEntryForm(false);setSetupMode(false);setShowManageFields(false);setEditId(null);setForm({});}}>Cancel</button>
+              <button className="btn btn-outline" style={{ flex:1 }} onClick={()=>{ setShowEntryForm(false); setSetupMode(!fields); setShowManageFields(false); setEditId(null); setForm({}); }}>Cancel</button>
               {(setupMode||showManageFields) ? (
-                <button className="btn btn-primary" style={{ flex:2 }}
-                  onClick={() => {
-                    const combined = [...defaultFields, ...draftFields.filter(f=>f.name.trim())];
-                    saveCurrentFields(combined);
-                  }}>
-                  💾 Save Fields
-                </button>
+                <button className="btn btn-primary" style={{ flex:2 }} onClick={()=>{
+                  const combined=[...defaultFields,...(draftFields||[]).filter(f=>f.name.trim())];
+                  saveCurrentFields(combined);
+                }}>💾 Save Fields</button>
               ) : (
                 <button className="btn btn-primary" style={{ flex:2, background:"linear-gradient(135deg,#5B21B6,#7C3AED)" }} onClick={saveEntry}>
-                  {editId ? "✅ Update" : "💾 Save Record"}
+                  {editId?"✅ Update":"💾 Save Record"}
                 </button>
               )}
             </div>
@@ -2092,16 +2133,14 @@ function SalesRepScreen({ user }) {
 
       {/* View Record modal */}
       {viewEntry && (
-        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
-          onClick={() => setViewEntry(null)}>
-          <div style={{ background:"var(--surface)", borderRadius:24, width:"100%", maxWidth:480, maxHeight:"80vh", overflow:"hidden", display:"flex", flexDirection:"column", boxShadow:"0 24px 60px rgba(0,0,0,0.3)" }}
-            onClick={e => e.stopPropagation()}>
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setViewEntry(null)}>
+          <div style={{ background:"var(--surface)", borderRadius:24, width:"100%", maxWidth:480, maxHeight:"80vh", overflow:"hidden", display:"flex", flexDirection:"column", boxShadow:"0 24px 60px rgba(0,0,0,0.3)" }} onClick={e=>e.stopPropagation()}>
             <div style={{ padding:"20px 20px 14px", borderBottom:`1px solid var(--border)`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
               <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                 <div style={{ width:42, height:42, borderRadius:12, background:"var(--primary-light)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>👤</div>
                 <div>
                   <div style={{ fontSize:17, fontWeight:800, color:"var(--text)" }}>{viewEntry[orderedFields[0]?.id]||"Record"}</div>
-                  <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>Added {new Date(viewEntry.createdAt).toLocaleDateString("en-NG",{day:"numeric",month:"short",year:"numeric"})}</div>
+                  <div style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>Added {new Date(viewEntry.createdAt||Date.now()).toLocaleDateString("en-NG",{day:"numeric",month:"short",year:"numeric"})}</div>
                 </div>
               </div>
               <button onClick={()=>setViewEntry(null)} style={{ background:"var(--bg)", border:"none", width:32, height:32, borderRadius:"50%", cursor:"pointer", fontSize:18, color:"var(--text-muted)" }}>×</button>
@@ -2126,43 +2165,44 @@ function SalesRepScreen({ user }) {
         </div>
       )}
 
-      {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)} />}
+      {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
 
-      {/* Export — each group as a separate sheet */}
+      {/* Export */}
       {showExport && (
         <ExportModal
           title="Customer Records"
-          onClose={() => setShowExport(false)}
+          onClose={()=>setShowExport(false)}
           onExcelExport={() => {
-            try {
-              const wb = XLSX.utils.book_new();
-              // Current records sheet
-              if (entries.length > 0) {
-                const headers = activeFields.map(f => f.name);
-                const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
-                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-                XLSX.utils.book_append_sheet(wb, ws, "Current Records");
-              }
-              // Archived group sheets
-              (groups||[]).forEach(grp => {
-                if (!grp.entries?.length) return;
-                const gFields = grp.fields || defaultFields;
-                const headers = gFields.map(f => f.name);
-                const rows = grp.entries.map(e => gFields.map(f => e[f.id] || ""));
-                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-                const sheetName = (grp.name||"Group").slice(0,31).replace(/[^a-zA-Z0-9 _-]/g,"").slice(0,31);
-                XLSX.utils.book_append_sheet(wb, ws, sheetName);
-              });
-              if (wb.SheetNames.length === 0) { showToast("No data to export","error"); return; }
-              XLSX.writeFile(wb, `CustomerRecords_${TODAY()}.xlsx`);
-              setShowExport(false); showToast("Excel downloaded — each group is a separate sheet!");
-            } catch(e) { showToast("Export failed: " + e.message, "error"); }
+            loadSheetJS(() => {
+              try {
+                const wb = window.XLSX.utils.book_new();
+                // Current records sheet
+                if (entries.length > 0) {
+                  const headers = activeFields.map(f=>f.name);
+                  const rows = entries.map(e=>activeFields.map(f=>e[f.id]||""));
+                  const ws = window.XLSX.utils.aoa_to_sheet([headers,...rows]);
+                  window.XLSX.utils.book_append_sheet(wb, ws, "Current Records");
+                }
+                // Archived group sheets
+                (groups||[]).forEach(grp => {
+                  if (!grp.entries?.length) return;
+                  const gF = grp.fields || defaultFields;
+                  const headers = gF.map(f=>f.name);
+                  const rows = grp.entries.map(e=>gF.map(f=>e[f.id]||""));
+                  const ws = window.XLSX.utils.aoa_to_sheet([headers,...rows]);
+                  const sheetName = (grp.name||"Group").slice(0,31).replace(/[^a-zA-Z0-9 _-]/g,"");
+                  window.XLSX.utils.book_append_sheet(wb, ws, sheetName||"Group");
+                });
+                if (wb.SheetNames.length === 0) { showToast("No data to export","error"); return; }
+                window.XLSX.writeFile(wb, `CustomerRecords_${TODAY()}.xlsx`);
+                setShowExport(false); showToast("Excel downloaded!");
+              } catch(e) { showToast("Export failed: "+e.message,"error"); }
+            });
           }}
           onPDFExport={() => {
-            // Export current group only for PDF
-            const headers = activeFields.map(f => f.name);
-            const rows = entries.map(e => activeFields.map(f => e[f.id] || ""));
-            exportToPDF("Customer Records — Current Group", headers, rows, "CustomerRecords");
+            const headers = activeFields.map(f=>f.name);
+            const rows = entries.map(e=>activeFields.map(f=>e[f.id]||""));
+            exportToPDF("Customer Records", headers, rows, "CustomerRecords");
             setShowExport(false);
           }}
         />
@@ -5581,16 +5621,22 @@ function SyncHistoryScreen({ user }) {
     : 999;
   const showBackupPrompt = daysSinceBackup >= 7;
 
-  const downloadBackup = () => {
+  const downloadBackup = async () => {
     const uid = user.uid;
+    const readBiz = async k => {
+      const v = await IDB.get(k).catch(() => null);
+      if (v !== undefined && v !== null) return v;
+      try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : []; } catch { return []; }
+    };
+    const [_inv, _sales, _farm, _entries, _debt] = await Promise.all([
+      readBiz(`sl_inv_${uid}`), readBiz(`sl_shopsales_${uid}`),
+      readBiz(`sl_farm_${uid}`), readBiz(`sl_sales_${uid}`), readBiz(`sl_debt_${uid}`),
+    ]);
     const backup = {
-      exportedAt:  new Date().toISOString(),
-      user:        { name: user.name, email: user.email, location: user.location },
-      inventory:   JSON.parse(localStorage.getItem(`sl_inv_${uid}`)       || "[]"),
-      shopSales:   JSON.parse(localStorage.getItem(`sl_shopsales_${uid}`) || "[]"),
-      farmExpenses:JSON.parse(localStorage.getItem(`sl_farm_${uid}`)      || "[]"),
-      salesEntries:JSON.parse(localStorage.getItem(`sl_sales_${uid}`)     || "[]"),
-      debtRecords: JSON.parse(localStorage.getItem(`sl_debt_${uid}`)      || "[]"),
+      exportedAt:   new Date().toISOString(),
+      user:         { name: user.name, email: user.email, location: user.location },
+      inventory:    _inv, shopSales: _sales, farmExpenses: _farm,
+      salesEntries: _entries, debtRecords: _debt,
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url  = URL.createObjectURL(blob);
@@ -6281,7 +6327,7 @@ export default function App() {
     const _lbk = `rc_last_backup_${fullUser.uid}`;
     const _lb  = localStorage.getItem(_lbk);
     const _days = _lb ? Math.floor((Date.now() - new Date(_lb)) / 86400000) : 999;
-    if (_days >= 7 && !isNewSignup) setTimeout(() => setNavTab("synclog"), 5000);
+    // Backup reminder handled via badge on Sync tab — no forced redirect
 
     // Pull latest data from server   also refresh profile to get latest sectors
     const token = localStorage.getItem("rc_token");
@@ -6356,10 +6402,11 @@ export default function App() {
         ))}
         <button className="btn btn-primary" style={{ marginBottom:10, background:"linear-gradient(135deg,#7C3AED,#5B21B6)" }}
           onClick={() => {
-            loadDemoData();
-            setUser(DEMO_USER);
-            setSector("shop");
-            setScreen("app");
+            loadDemoData().then(() => {
+              setUser(DEMO_USER);
+              setSector("shop");
+              setScreen("app");
+            });
           }}>
           🚀 Launch Demo
         </button>
@@ -6545,7 +6592,7 @@ export default function App() {
       {localStorage.getItem("rc_demo_mode") === "1" && (
         <div style={{ background:"linear-gradient(135deg,#7C3AED,#5B21B6)", color:"#fff", fontSize:12, fontWeight:700, padding:"8px 16px", textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
           <span>🎮 Demo Mode — data is not saved</span>
-          <button onClick={() => { clearDemoData(); setUser(null); setScreen("welcome"); }} style={{ background:"rgba(255,255,255,0.25)", border:"none", color:"#fff", borderRadius:6, padding:"3px 10px", fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif", fontWeight:700 }}>Exit Demo</button>
+          <button onClick={() => { clearDemoData().then(() => { setUser(null); setScreen("welcome"); }); }} style={{ background:"rgba(255,255,255,0.25)", border:"none", color:"#fff", borderRadius:6, padding:"3px 10px", fontSize:11, cursor:"pointer", fontFamily:"'Inter',sans-serif", fontWeight:700 }}>Exit Demo</button>
         </div>
       )}
       <div className="app">
@@ -6836,6 +6883,7 @@ export default function App() {
             {navTab === "sector" && sector === "shop" && <ShopScreen user={user} />}
             {navTab === "sector" && sector === "farm" && <FarmScreen user={user} />}
             {navTab === "history" && <HistoryScreen user={user} />}
+            {navTab === "synclog" && <SyncHistoryScreen user={user} />}
             {navTab === "debtcredit" && <DebtCreditScreen key={`debt-${syncTick}`} user={user} />}
             {navTab === "notifications" && <NotificationsScreen user={user} onNavigateShop={() => { setSector("shop"); setNavTab("sector"); localStorage.setItem("rc_open_inventory", "1"); }} />}
             {navTab === "profile" && <ProfileScreen user={user} onLogout={handleLogout} onManageSectors={handleManageSectors} />}
