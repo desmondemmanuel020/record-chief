@@ -412,21 +412,19 @@ function useLocalState(key, init) {
       const next = typeof v === "function" ? v(prev) : v;
       try {
         if (isBiz) {
-          // Business data: IDB primary, localStorage mirror
-          IDB.set(key, next).catch(() => {});
+          // Business data: write to BOTH IDB and localStorage
+          // localStorage is the fast-read fallback for initial renders
+          // IDB is the primary store for large data
           try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+          IDB.set(key, next).catch(() => {});
+          // Signal sync engine to push immediately
+          clearTimeout(window.__rcSyncTimer);
+          window.__rcSyncTimer = setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("rc_data_write"));
+          }, 800);
         } else {
           // Settings/auth: localStorage only
           localStorage.setItem(key, JSON.stringify(next));
-        }
-        // Debounced push sync for business data
-        if (isBiz) {
-          clearTimeout(window.__rcSyncTimer);
-          window.__rcSyncTimer = setTimeout(() => {
-            const _tok = localStorage.getItem("rc_token");
-            const _uid = (() => { try { return JSON.parse(localStorage.getItem("rc_session")||"{}").uid; } catch { return null; } })();
-            if (_tok && _uid && navigator.onLine) AuthAPI.syncToServer(_uid).catch(() => {});
-          }, 800);
         }
       } catch {}
       return next;
@@ -1191,10 +1189,10 @@ const AuthAPI = {
 
       let changed = false;
 
-      // Write to IDB and localStorage together
+      // Write to both localStorage (fast read) and IDB (primary store)
       const persist = async (key, val) => {
-        localStorage.setItem(key, JSON.stringify(val));
-        await IDB.set(key, val);
+        try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+        await IDB.set(key, val).catch(() => {});
       };
 
       const safeApply = async (key, serverVal, label) => {
@@ -1249,7 +1247,9 @@ const AuthAPI = {
 
       localStorage.setItem("rc_last_sync", new Date().toISOString());
 
-      window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
+      if (changed) {
+        window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
+      }
     } catch(e) { /* silent */ }
   },
 
@@ -5609,8 +5609,8 @@ function OnboardingScreen({ user, onDone }) {
 
 // ===================== SYNC HISTORY SCREEN =====================
 function SyncHistoryScreen({ user }) {
-  const [log, setLog]           = useState(() => SyncLog.get());
-  const [showBackup, setShowBackup] = useState(false);
+  const [log, setLog]             = useState(() => { try { return SyncLog.get(); } catch { return []; } });
+  const [downloading, setDownloading] = useState(false);
   const lastSync = localStorage.getItem("rc_last_sync");
 
   // Weekly backup prompt   show if last backup was >7 days ago
@@ -5646,7 +5646,8 @@ function SyncHistoryScreen({ user }) {
     a.click();
     URL.revokeObjectURL(url);
     localStorage.setItem(lastBackupKey, new Date().toISOString());
-    setShowBackup(false);
+    // refresh display
+    setLog(SyncLog.get());
   };
 
   const typeColor = { kept_local: COLORS.amber, applied_server: COLORS.accent, conflict: COLORS.danger };
@@ -5671,7 +5672,7 @@ function SyncHistoryScreen({ user }) {
               ? `Your last backup was ${daysSinceBackup} days ago. Download a fresh JSON backup of all your data.`
               : "You haven't downloaded a local backup yet. It's a safety net in case anything goes wrong."}
           </div>
-          <button onClick={downloadBackup} style={{
+          <button onClick={async () => { setDownloading(true); try { await downloadBackup(); } finally { setDownloading(false); } }} disabled={downloading} style={{
             background: "#fff", color: "#1E3A8A", border: "none", borderRadius: 10,
             padding: "9px 18px", fontSize: 13, fontWeight: 800, cursor: "pointer",
             fontFamily: "'Inter', sans-serif",
@@ -5692,8 +5693,10 @@ function SyncHistoryScreen({ user }) {
             </div>
           </div>
         </div>
-        <button className="btn btn-primary" onClick={downloadBackup}>
-          💾 Download Full Backup (.json)
+        <button className="btn btn-primary"
+          onClick={async () => { setDownloading(true); try { await downloadBackup(); } finally { setDownloading(false); } }}
+          disabled={downloading}>
+          {downloading ? "⏳ Preparing..." : "💾 Download Full Backup (.json)"}
         </button>
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8, lineHeight: 1.6 }}>
           Downloads all your records as a JSON file. Store it in Google Drive or WhatsApp for safety.
@@ -6068,17 +6071,9 @@ export default function App() {
     schedulePull();
 
     // Re-render on sync update
-    const handleSyncUpdate = () => {
-      // Increment tick to force ALL components to re-read from localStorage
+    const handleSyncUpdate = (e) => {
+      // Re-render all screens so they pick up new data from localStorage
       setSyncTick(t => t + 1);
-      // Also refresh user object from session cache
-      const session = localStorage.getItem("rc_session");
-      if (session) {
-        try {
-          const cached = JSON.parse(session);
-          setUser(prev => ({ ...prev, ...cached }));
-        } catch(e) {}
-      }
     };
     window.addEventListener("rc_sync_update", handleSyncUpdate);
 
@@ -6879,10 +6874,10 @@ export default function App() {
           )}
           <div className="main">
             {navTab === "home" && <HomeScreen key={syncTick} user={user} sector={sector} onSetSector={(s) => { setSector(s); setNavTab("sector"); }} onManageSectors={handleManageSectors} onViewOverview={() => setNavTab("history")} onViewDebt={() => setNavTab("debtcredit")} />}
-            {navTab === "sector" && sector === "sales" && <SalesRepScreen user={user} />}
-            {navTab === "sector" && sector === "shop" && <ShopScreen user={user} />}
-            {navTab === "sector" && sector === "farm" && <FarmScreen user={user} />}
-            {navTab === "history" && <HistoryScreen user={user} />}
+            {navTab === "sector" && sector === "sales" && <SalesRepScreen key={`sales-${syncTick}`} user={user} />}
+            {navTab === "sector" && sector === "shop" && <ShopScreen key={`shop-${syncTick}`} user={user} />}
+            {navTab === "sector" && sector === "farm" && <FarmScreen key={`farm-${syncTick}`} user={user} />}
+            {navTab === "history" && <HistoryScreen key={`hist-${syncTick}`} user={user} />}
             {navTab === "synclog" && <SyncHistoryScreen user={user} />}
             {navTab === "debtcredit" && <DebtCreditScreen key={`debt-${syncTick}`} user={user} />}
             {navTab === "notifications" && <NotificationsScreen user={user} onNavigateShop={() => { setSector("shop"); setNavTab("sector"); localStorage.setItem("rc_open_inventory", "1"); }} />}
