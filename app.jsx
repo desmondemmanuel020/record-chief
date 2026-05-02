@@ -1167,6 +1167,15 @@ const AuthAPI = {
         })(),
       };
 
+      // Guard: don't push empty data if we haven't pulled yet this session
+      const _lastPull = localStorage.getItem("rc_last_sync");
+      const _hasData  = (payload.inventory||[]).length > 0 ||
+                        (payload.shopSales||[]).length > 0 ||
+                        (payload.farmExpenses||[]).length > 0 ||
+                        (payload.salesEntries||[]).length > 0 ||
+                        (payload.debtRecords||[]).length > 0;
+      if (!_hasData && !_lastPull) return; // empty + no pull yet = skip
+
       await fetch(`${API_URL}/api/data`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -1247,9 +1256,8 @@ const AuthAPI = {
 
       localStorage.setItem("rc_last_sync", new Date().toISOString());
 
-      if (changed) {
-        window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
-      }
+      // Always fire update after pull so UI reflects server state on new devices
+      window.dispatchEvent(new CustomEvent("rc_sync_update", { detail: { uid } }));
     } catch(e) { /* silent */ }
   },
 
@@ -6062,24 +6070,30 @@ export default function App() {
       pullTimer = setTimeout(() => { doPull(); schedulePull(); }, delay);
     };
 
-    // On login: push then pull
+    // On login: PULL FIRST, then schedule normal push/pull
+    // Never push on fresh login — would overwrite server data with empty local
     if (navigator.onLine) {
-      doSync();
-      setTimeout(doPull, 2000);
+      setTimeout(doPull, 800); // pull server data first
     }
     schedulePush();
     schedulePull();
 
-    // Re-render on sync update
+    // Increment syncTick on every server pull — forces data screens to remount
     const handleSyncUpdate = (e) => {
-      // Re-render all screens so they pick up new data from localStorage
       setSyncTick(t => t + 1);
+      try {
+        const cached = JSON.parse(localStorage.getItem("rc_session") || "{}");
+        if (cached.uid) setUser(prev => ({ ...prev, ...cached }));
+      } catch {}
     };
     window.addEventListener("rc_sync_update", handleSyncUpdate);
 
-    // Sync immediately when coming back online
+    // When coming back online: PULL first (get latest), then push local changes
     const handleOnline = () => {
-      setTimeout(() => { doSync(); setTimeout(doPull, 1500); }, 500);
+      setTimeout(() => {
+        doPull(); // get server state first
+        setTimeout(doSync, 2000); // then push local changes
+      }, 500);
     };
     window.addEventListener("online", handleOnline);
 
@@ -6338,7 +6352,12 @@ export default function App() {
           }
         }).catch(() => {});
     }
-    AuthAPI.syncFromServer(fullUser.uid || fullUser._id).catch(() => {});
+    // Pull data from server on every login — primary sync trigger on new device
+    const authUid = fullUser.uid || fullUser._id;
+    if (navigator.onLine) {
+      localStorage.removeItem("rc_last_sync"); // force fresh pull
+      setTimeout(() => AuthAPI.syncFromServer(authUid).catch(() => {}), 800);
+    }
   };
 
   const handleLogout = async () => {
