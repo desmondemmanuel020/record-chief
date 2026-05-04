@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "buildCommand": "",
+  "installCommand": "",
+  "outputDirectory": ".",
+  "framework": null,
+  "headers": [
+    {"source":"/bundle.js","headers":[{"key":"Cache-Control","value":"no-cache, no-store, must-revalidate"},{"key":"Content-Type","value":"application/javascript"}]},
+    {"source":"/index.html","headers":[{"key":"Cache-Control","value":"no-cache, no-store, must-revalidate"}]},
+    {"source":"/sw.js","headers":[{"key":"Cache-Control","value":"no-cache, no-store, must-revalidate"}]}
+  ],
+  "routes":[{"src":"/(.*)","dest":"/$1"}]
+}
