@@ -1,50 +1,49 @@
-const CACHE_NAME = "recordchief-v5";
-const ASSETS = [
-  "/",
-  "/index.html",
-  "/app.jsx",
-  "/manifest.json",
-  "https://unpkg.com/react@18/umd/react.production.min.js",
-  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
-  "https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"
+const CACHE = 'rc-v8';
+const CDN = [
+  'https://unpkg.com/react@18/umd/react.production.min.js',
+  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
 ];
 
-self.addEventListener("install", e => {
+self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then(cache =>
-      Promise.allSettled(ASSETS.map(url => cache.add(url).catch(() => {})))
+    caches.open(CACHE).then(c =>
+      Promise.allSettled(CDN.map(u => c.add(u).catch(() => {})))
     )
   );
   self.skipWaiting();
 });
 
-self.addEventListener("activate", e => {
+self.addEventListener('activate', e => {
   e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    caches.keys().then(ks =>
+      Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))
     )
   );
   self.clients.claim();
 });
 
-self.addEventListener("fetch", e => {
-  if (e.request.method !== "GET" || e.request.url.startsWith("chrome-extension")) return;
+self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  // Never cache app.js or index.html — always fetch fresh to pick up updates
+  if (['/app.js', '/', '/index.html'].includes(url.pathname)) {
+    e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+    return;
+  }
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;
-      return fetch(e.request).then(response => {
-        if (response && response.status === 200 && response.type !== "opaque") {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+      return fetch(e.request).then(r => {
+        if (r && r.status === 200) {
+          const cl = r.clone();
+          caches.open(CACHE).then(c => c.put(e.request, cl));
         }
-        return response;
-      }).catch(() => {
-        if (e.request.mode === "navigate") return caches.match("/index.html");
-      });
+        return r;
+      }).catch(() => e.request.mode === 'navigate' ? caches.match('/index.html') : undefined);
     })
   );
 });
 
-self.addEventListener("message", e => {
-  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
+self.addEventListener('message', e => {
+  if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
