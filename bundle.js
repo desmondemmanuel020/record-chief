@@ -1,8 +1,5 @@
-// Record Chief — Self-contained bundle (React 18 + App)
-// Built: 2026-05-04T22:45:32.337Z
-
+// Record Chief v2 — 2026-05-08T06:38:46.856Z
 (function(window){
-// ── React 18 ──
 /**
  * @license React
  * react.production.min.js
@@ -35,7 +32,6 @@ c.useEffect=function(a,b){return g.current.useEffect(a,b)};c.useId=function(){re
 c.useState=function(a){return g.current.useState(a)};c.useSyncExternalStore=function(a,b,c){return g.current.useSyncExternalStore(a,b,c)};c.useTransition=function(){return g.current.useTransition()};c.version="18.3.1"});
 })();
 
-// ── ReactDOM 18 ──
 /**
  * @license React
  * react-dom.production.min.js
@@ -304,7 +300,6 @@ var d=null!=c&&c.hydratedSources||null,e=!1,f="",g=aj;null!==c&&void 0!==c&&(!0=
 function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmountComponentAtNode=function(a){if(!Vd(a))throw Error(m(40));return a._reactRootContainer?(yb(function(){Wd(null,null,a,!1,function(){a._reactRootContainer=null;a[Ja]=null})}),!0):!1};Q.unstable_batchedUpdates=Tf;Q.unstable_renderSubtreeIntoContainer=function(a,b,c,d){if(!Vd(c))throw Error(m(200));if(null==a||void 0===a._reactInternals)throw Error(m(38));return Wd(a,b,c,!1,d)};Q.version="18.3.1-next-f1338f8080-20240426"});
 })();
 
-// ── App ──
 var {
   useState,
   useEffect,
@@ -680,7 +675,7 @@ const css = `
     .btn { font-size: 15px; }
   }
 `;
-function useLocalState(key, init) {
+function useLocalState(key, init, _syncTick) {
   // Business data keys (inventory, sales, etc.) → IDB primary
   // Settings/auth keys → localStorage only
   const isBiz = typeof isBusinessKey === "function" && isBusinessKey(key);
@@ -714,22 +709,36 @@ function useLocalState(key, init) {
       }).catch(() => {});
     }
 
-    // Re-hydrate on server sync
+    // Re-hydrate on server sync — read from localStorage immediately (fast)
+    // then IDB as confirmation
     const handler = () => {
+      // Fast path: localStorage is always up to date after sync
+      try {
+        const s = localStorage.getItem(key);
+        if (s && active) {
+          const parsed = JSON.parse(s);
+          setVal(prev => {
+            try {
+              return JSON.stringify(prev) !== JSON.stringify(parsed) ? parsed : prev;
+            } catch {
+              return parsed;
+            }
+          });
+        }
+      } catch {}
+      // Slow path: confirm with IDB
       if (isBiz) {
         IDB.get(key).then(v => {
-          if (active && v !== undefined && v !== null) setVal(v);
-        }).catch(() => {
-          try {
-            const s = localStorage.getItem(key);
-            if (s && active) setVal(JSON.parse(s));
-          } catch {}
-        });
-      } else {
-        try {
-          const s = localStorage.getItem(key);
-          if (s && active) setVal(JSON.parse(s));
-        } catch {}
+          if (active && v !== undefined && v !== null) {
+            setVal(prev => {
+              try {
+                return JSON.stringify(prev) !== JSON.stringify(v) ? v : prev;
+              } catch {
+                return v;
+              }
+            });
+          }
+        }).catch(() => {});
       }
     };
     window.addEventListener("rc_sync_update", handler);
@@ -750,10 +759,18 @@ function useLocalState(key, init) {
             localStorage.setItem(key, JSON.stringify(next));
           } catch {}
           IDB.set(key, next).catch(() => {});
-          // Signal sync engine to push immediately
+          // Push to server after 800ms debounce
           clearTimeout(window.__rcSyncTimer);
           window.__rcSyncTimer = setTimeout(() => {
-            window.dispatchEvent(new CustomEvent("rc_data_write"));
+            const _tok = localStorage.getItem("rc_token");
+            const _uid = (() => {
+              try {
+                return JSON.parse(localStorage.getItem("rc_session") || "{}").uid;
+              } catch {
+                return null;
+              }
+            })();
+            if (_tok && _uid && navigator.onLine) AuthAPI.syncToServer(_uid).catch(() => {});
           }, 800);
         } else {
           // Settings/auth: localStorage only
@@ -2242,10 +2259,9 @@ const AuthAPI = {
         })()
       };
 
-      // Guard: don't push empty data if we haven't pulled yet this session
-      const _lastPull = localStorage.getItem("rc_last_sync");
+      // Guard: only skip if ALL data arrays are empty (nothing to push)
       const _hasData = (payload.inventory || []).length > 0 || (payload.shopSales || []).length > 0 || (payload.farmExpenses || []).length > 0 || (payload.salesEntries || []).length > 0 || (payload.debtRecords || []).length > 0;
-      if (!_hasData && !_lastPull) return; // empty + no pull yet = skip
+      if (!_hasData) return; // skip — no data to push
 
       await fetch(`${API_URL}/api/data`, {
         method: "PUT",
@@ -2328,12 +2344,14 @@ const AuthAPI = {
       }
       localStorage.setItem("rc_last_sync", new Date().toISOString());
 
-      // Always fire update after pull so UI reflects server state on new devices
-      window.dispatchEvent(new CustomEvent("rc_sync_update", {
-        detail: {
-          uid
-        }
-      }));
+      // Only fire update event when data actually changed — prevents constant re-renders
+      if (changed) {
+        window.dispatchEvent(new CustomEvent("rc_sync_update", {
+          detail: {
+            uid
+          }
+        }));
+      }
     } catch (e) {/* silent */}
   },
   // Internal fallback (kept for backward compat)
@@ -3609,7 +3627,8 @@ function HomeScreen({
 
 // ===================== SALES REP MODE =====================
 function SalesRepScreen({
-  user
+  user,
+  syncTick
 }) {
   const storageKey = `sl_sales_${user.uid}`;
   const fieldsKey = `sl_sales_fields_${user.uid}`;
@@ -4783,7 +4802,8 @@ function RestockRow({
 
 // ===================== SHOP MODE =====================
 function ShopScreen({
-  user
+  user,
+  syncTick
 }) {
   const invKey = `sl_inv_${user.uid}`;
   const salesKey = `sl_shopsales_${user.uid}`;
@@ -4824,7 +4844,7 @@ function ShopScreen({
     type
   });
   const todaySales = sales.filter(s => s.date === TODAY());
-  const todayTotal = todaySales.reduce((a, s) => a + s.total, 0);
+  const todayTotal = todaySales.reduce((a, s) => a + (s.total || 0), 0);
   const selectedItem = inventory.find(i => i.id === form.itemId);
   const addItem = () => {
     const e = {};
@@ -4914,8 +4934,12 @@ function ShopScreen({
     } : i));
     showToast("Price updated!");
   };
-  const filteredSales = sales.filter(s => !search || s.itemName.toLowerCase().includes(search.toLowerCase()));
-  const allTimeSales = sales.reduce((a, s) => a + s.total, 0);
+  const filteredSales = sales.filter(s => {
+    if (!s || s.archived) return false;
+    if (!search) return true;
+    return (s.itemName || '').toLowerCase().includes(search.toLowerCase());
+  });
+  const allTimeSales = sales.reduce((a, s) => a + (s.total || 0), 0);
   const getPeriodRange = () => {
     const now = new Date();
     const fmt = d => d.toISOString().slice(0, 10);
@@ -4955,8 +4979,8 @@ function ShopScreen({
     from: pFrom,
     to: pTo
   } = getPeriodRange();
-  const periodSalesTotal = sales.filter(s => s.date && (!pFrom || s.date >= pFrom) && (!pTo || s.date <= pTo)).reduce((a, s) => a + s.total, 0);
-  const periodSalesCount = sales.filter(s => s.date && (!pFrom || s.date >= pFrom) && (!pTo || s.date <= pTo)).length;
+  const periodSalesTotal = sales.filter(s => s && s.date && !s.archived && (!pFrom || s.date >= pFrom) && (!pTo || s.date <= pTo)).reduce((a, s) => a + (s.total || 0), 0);
+  const periodSalesCount = sales.filter(s => s && s.date && !s.archived && (!pFrom || s.date >= pFrom) && (!pTo || s.date <= pTo)).length;
   const periodLabel = {
     today: "Today",
     week: "This Week",
@@ -5254,338 +5278,361 @@ function ShopScreen({
     className: `tab-btn${tab === "inventory" ? " active" : ""}`,
     onClick: () => setTab("inventory")
   }, "Inventory (", inventory.length, ")")), tab === "history" && (() => {
-    // Best-selling items (all time)
-    const itemTotals = {};
-    sales.filter(s => !s.archived).forEach(s => {
-      if (!itemTotals[s.itemName]) itemTotals[s.itemName] = {
-        name: s.itemName,
-        qty: 0,
-        revenue: 0
-      };
-      itemTotals[s.itemName].qty += s.qty;
-      itemTotals[s.itemName].revenue += s.total;
-    });
-    const topItems = Object.values(itemTotals).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
-    const maxRevenue = topItems[0]?.revenue || 1;
-    const base = sales.filter(s => {
-      if (!s.date) return false;
-      if (s.archived) return false;
-      if (tagFilter && s.tag !== tagFilter) return false;
-      return (!pFrom || s.date >= pFrom) && (!pTo || s.date <= pTo);
-    });
-    const filtered = base.filter(s => !search || s.itemName.toLowerCase().includes(search.toLowerCase()));
-    const sorted = [...filtered].sort((a, b) => {
-      switch (salesSortBy) {
-        case "date_desc":
-          return b.date.localeCompare(a.date);
-        case "date_asc":
-          return a.date.localeCompare(b.date);
-        case "amount_desc":
-          return b.total - a.total;
-        case "amount_asc":
-          return a.total - b.total;
-        case "name_asc":
-          return a.itemName.localeCompare(b.itemName);
-        case "name_desc":
-          return b.itemName.localeCompare(a.itemName);
-        default:
-          return 0;
-      }
-    });
-    return /*#__PURE__*/React.createElement("div", null, topItems.length > 0 && /*#__PURE__*/React.createElement("div", {
-      className: "card",
-      style: {
-        marginBottom: "0.75rem"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        fontWeight: 700,
-        color: COLORS.text,
-        marginBottom: 10,
-        display: "flex",
-        alignItems: "center",
-        gap: 6
-      }
-    }, "\uD83C\uDFC6 Best-Selling Items"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 8
-      }
-    }, topItems.map((item, i) => /*#__PURE__*/React.createElement("div", {
-      key: item.name
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 4
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 6
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        fontWeight: 800,
-        color: i === 0 ? "#D97706" : i === 1 ? "#64748B" : i === 2 ? "#92400E" : COLORS.textMuted,
-        width: 16
-      }
-    }, "#", i + 1), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 13,
-        fontWeight: 600,
-        color: COLORS.text
-      }
-    }, item.name)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: "right"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontFamily: "'Space Mono', monospace",
-        fontSize: 12,
-        fontWeight: 700,
-        color: COLORS.accent
-      }
-    }, NAIRA(item.revenue)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 10,
-        color: COLORS.textMuted
-      }
-    }, item.qty, " sold"))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        height: 5,
-        borderRadius: 3,
-        background: COLORS.bg,
-        overflow: "hidden"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        height: "100%",
-        borderRadius: 3,
-        background: i === 0 ? "#D97706" : COLORS.accent,
-        width: `${item.revenue / maxRevenue * 100}%`,
-        transition: "width 0.5s"
-      }
-    })))))), (() => {
-      const allTags = [...new Set(sales.filter(s => s.tag).map(s => s.tag))];
-      return allTags.length > 0 ? /*#__PURE__*/React.createElement("div", {
-        className: "chip-row",
-        style: {
-          marginBottom: "0.65rem"
+    try {
+      // Best-selling items (all time)
+      const itemTotals = {};
+      sales.filter(s => !s.archived).forEach(s => {
+        if (!itemTotals[s.itemName]) itemTotals[s.itemName] = {
+          name: s.itemName,
+          qty: 0,
+          revenue: 0
+        };
+        itemTotals[s.itemName].qty += s.qty;
+        itemTotals[s.itemName].revenue += s.total;
+      });
+      const topItems = Object.values(itemTotals).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+      const maxRevenue = topItems[0]?.revenue || 1;
+      const base = sales.filter(s => {
+        if (!s.date) return false;
+        if (s.archived) return false;
+        if (tagFilter && s.tag !== tagFilter) return false;
+        return (!pFrom || s.date >= pFrom) && (!pTo || s.date <= pTo);
+      });
+      const filtered = base.filter(s => !search || s.itemName.toLowerCase().includes(search.toLowerCase()));
+      const sorted = [...filtered].sort((a, b) => {
+        switch (salesSortBy) {
+          case "date_desc":
+            return b.date.localeCompare(a.date);
+          case "date_asc":
+            return a.date.localeCompare(b.date);
+          case "amount_desc":
+            return b.total - a.total;
+          case "amount_asc":
+            return a.total - b.total;
+          case "name_asc":
+            return a.itemName.localeCompare(b.itemName);
+          case "name_desc":
+            return b.itemName.localeCompare(a.itemName);
+          default:
+            return 0;
         }
-      }, /*#__PURE__*/React.createElement("button", {
-        onClick: () => setTagFilter(""),
+      });
+      return /*#__PURE__*/React.createElement("div", null, topItems.length > 0 && /*#__PURE__*/React.createElement("div", {
+        className: "card",
         style: {
-          padding: "4px 11px",
-          borderRadius: 20,
+          marginBottom: "0.75rem"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: COLORS.text,
+          marginBottom: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 6
+        }
+      }, "\uD83C\uDFC6 Best-Selling Items"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          gap: 8
+        }
+      }, topItems.map((item, i) => /*#__PURE__*/React.createElement("div", {
+        key: item.name
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 4
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 6
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
           fontSize: 11,
-          fontWeight: 600,
-          cursor: "pointer",
-          fontFamily: "'Inter', sans-serif",
-          border: tagFilter === "" ? `1.5px solid ${COLORS.primary}` : `1px solid ${COLORS.border}`,
-          background: tagFilter === "" ? COLORS.primaryLight : COLORS.surface,
-          color: tagFilter === "" ? COLORS.primary : COLORS.textMuted
+          fontWeight: 800,
+          color: i === 0 ? "#D97706" : i === 1 ? "#64748B" : i === 2 ? "#92400E" : COLORS.textMuted,
+          width: 16
         }
-      }, "All"), allTags.map(tag => /*#__PURE__*/React.createElement("button", {
-        key: tag,
-        onClick: () => setTagFilter(t => t === tag ? "" : tag),
+      }, "#", i + 1), /*#__PURE__*/React.createElement("span", {
         style: {
-          padding: "4px 11px",
-          borderRadius: 20,
-          fontSize: 11,
+          fontSize: 13,
           fontWeight: 600,
-          cursor: "pointer",
-          fontFamily: "'Inter', sans-serif",
-          border: tagFilter === tag ? `1.5px solid ${COLORS.primary}` : `1px solid ${COLORS.border}`,
-          background: tagFilter === tag ? COLORS.primaryLight : COLORS.surface,
-          color: tagFilter === tag ? COLORS.primary : COLORS.textMuted
+          color: COLORS.text
         }
-      }, "\uD83C\uDFF7\uFE0F ", tag))) : null;
-    })(), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 8,
-        marginBottom: "0.75rem",
-        alignItems: "center"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1,
-        position: "relative"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        position: "absolute",
-        left: 12,
-        top: "50%",
-        transform: "translateY(-50%)",
-        color: COLORS.textLight,
-        pointerEvents: "none"
-      }
-    }, /*#__PURE__*/React.createElement(Icon, {
-      name: "search",
-      size: 15
-    })), /*#__PURE__*/React.createElement("input", {
-      className: "search-bar",
-      style: {
-        paddingRight: search ? 32 : 12
-      },
-      placeholder: "Search by item name\u2026",
-      value: search,
-      onChange: e => setSearch(e.target.value)
-    }), search && /*#__PURE__*/React.createElement("button", {
-      onClick: () => setSearch(""),
-      style: {
-        position: "absolute",
-        right: 10,
-        top: "50%",
-        transform: "translateY(-50%)",
-        background: COLORS.border,
-        border: "none",
-        borderRadius: "50%",
-        width: 18,
-        height: 18,
-        cursor: "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: COLORS.textMuted,
-        fontSize: 11
-      }
-    }, "\u2715")), /*#__PURE__*/React.createElement("select", {
-      value: salesSortBy,
-      onChange: e => setSalesSortBy(e.target.value),
-      style: {
-        flexShrink: 0,
-        padding: "9px 10px",
-        borderRadius: 10,
-        border: `1.5px solid ${COLORS.border}`,
-        background: COLORS.surface,
-        fontSize: 12,
-        fontWeight: 600,
-        color: COLORS.text,
-        fontFamily: "'Inter', sans-serif",
-        outline: "none",
-        cursor: "pointer"
-      }
-    }, /*#__PURE__*/React.createElement("option", {
-      value: "date_desc"
-    }, "\uD83D\uDCC5 Newest"), /*#__PURE__*/React.createElement("option", {
-      value: "date_asc"
-    }, "\uD83D\uDCC5 Oldest"), /*#__PURE__*/React.createElement("option", {
-      value: "amount_desc"
-    }, "\uD83D\uDCB0 High \u2192 Low"), /*#__PURE__*/React.createElement("option", {
-      value: "amount_asc"
-    }, "\uD83D\uDCB0 Low \u2192 High"), /*#__PURE__*/React.createElement("option", {
-      value: "name_asc"
-    }, "\uD83D\uDD24 A \u2192 Z"), /*#__PURE__*/React.createElement("option", {
-      value: "name_desc"
-    }, "\uD83D\uDD24 Z \u2192 A"))), search && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: COLORS.textMuted,
-        marginBottom: 8
-      }
-    }, sorted.length, " result", sorted.length !== 1 ? "s" : "", " for \"", /*#__PURE__*/React.createElement("strong", null, search), "\""), sorted.length === 0 ? /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: "center",
-        padding: "3rem 1rem"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 48,
-        marginBottom: 12
-      }
-    }, "\uD83D\uDED2"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 16,
-        fontWeight: 700,
-        color: COLORS.text,
-        marginBottom: 6
-      }
-    }, search ? `No results for "${search}"` : `No sales for ${periodLabel.toLowerCase()}`), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        color: COLORS.textMuted
-      }
-    }, sales.length === 0 ? "Tap the + button to record your first sale" : "Try a different search or period")) : /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 8
-      }
-    }, sorted.map(s => /*#__PURE__*/React.createElement("div", {
-      key: s.id,
-      style: {
-        background: "#fff",
-        borderRadius: 14,
-        border: `1px solid ${COLORS.border}`,
-        padding: "12px 14px",
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        boxShadow: "0 1px 3px rgba(15,23,42,0.04)"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 40,
-        height: 40,
-        borderRadius: 11,
-        background: COLORS.accentLight,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: 18,
-        flexShrink: 0
-      }
-    }, "\uD83D\uDECD\uFE0F"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1,
-        minWidth: 0
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 14,
-        fontWeight: 700,
-        color: COLORS.text,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap"
-      }
-    }, s.itemName), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: COLORS.textMuted,
-        marginTop: 2,
-        display: "flex",
-        gap: 8,
-        flexWrap: "wrap",
-        alignItems: "center"
-      }
-    }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCC5 ", s.date), /*#__PURE__*/React.createElement("span", null, "\xD7", s.qty, " @ ", NAIRA(s.price)), s.tag && /*#__PURE__*/React.createElement("span", {
-      style: {
-        background: COLORS.primaryLight,
-        color: COLORS.primary,
-        borderRadius: 6,
-        padding: "1px 7px",
-        fontWeight: 600,
-        fontSize: 10
-      }
-    }, "\uD83C\uDFF7\uFE0F ", s.tag))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontFamily: "'Space Mono', monospace",
-        fontSize: 15,
-        fontWeight: 700,
-        color: COLORS.accent,
-        flexShrink: 0
-      }
-    }, NAIRA(s.total))))));
+      }, item.name)), /*#__PURE__*/React.createElement("div", {
+        style: {
+          textAlign: "right"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 12,
+          fontWeight: 700,
+          color: COLORS.accent
+        }
+      }, NAIRA(item.revenue)), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 10,
+          color: COLORS.textMuted
+        }
+      }, item.qty, " sold"))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          height: 5,
+          borderRadius: 3,
+          background: COLORS.bg,
+          overflow: "hidden"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          height: "100%",
+          borderRadius: 3,
+          background: i === 0 ? "#D97706" : COLORS.accent,
+          width: `${item.revenue / maxRevenue * 100}%`,
+          transition: "width 0.5s"
+        }
+      })))))), (() => {
+        const allTags = [...new Set(sales.filter(s => s.tag).map(s => s.tag))];
+        return allTags.length > 0 ? /*#__PURE__*/React.createElement("div", {
+          className: "chip-row",
+          style: {
+            marginBottom: "0.65rem"
+          }
+        }, /*#__PURE__*/React.createElement("button", {
+          onClick: () => setTagFilter(""),
+          style: {
+            padding: "4px 11px",
+            borderRadius: 20,
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: "'Inter', sans-serif",
+            border: tagFilter === "" ? `1.5px solid ${COLORS.primary}` : `1px solid ${COLORS.border}`,
+            background: tagFilter === "" ? COLORS.primaryLight : COLORS.surface,
+            color: tagFilter === "" ? COLORS.primary : COLORS.textMuted
+          }
+        }, "All"), allTags.map(tag => /*#__PURE__*/React.createElement("button", {
+          key: tag,
+          onClick: () => setTagFilter(t => t === tag ? "" : tag),
+          style: {
+            padding: "4px 11px",
+            borderRadius: 20,
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: "'Inter', sans-serif",
+            border: tagFilter === tag ? `1.5px solid ${COLORS.primary}` : `1px solid ${COLORS.border}`,
+            background: tagFilter === tag ? COLORS.primaryLight : COLORS.surface,
+            color: tagFilter === tag ? COLORS.primary : COLORS.textMuted
+          }
+        }, "\uD83C\uDFF7\uFE0F ", tag))) : null;
+      })(), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 8,
+          marginBottom: "0.75rem",
+          alignItems: "center"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          flex: 1,
+          position: "relative"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          position: "absolute",
+          left: 12,
+          top: "50%",
+          transform: "translateY(-50%)",
+          color: COLORS.textLight,
+          pointerEvents: "none"
+        }
+      }, /*#__PURE__*/React.createElement(Icon, {
+        name: "search",
+        size: 15
+      })), /*#__PURE__*/React.createElement("input", {
+        className: "search-bar",
+        style: {
+          paddingRight: search ? 32 : 12
+        },
+        placeholder: "Search by item name\u2026",
+        value: search,
+        onChange: e => setSearch(e.target.value)
+      }), search && /*#__PURE__*/React.createElement("button", {
+        onClick: () => setSearch(""),
+        style: {
+          position: "absolute",
+          right: 10,
+          top: "50%",
+          transform: "translateY(-50%)",
+          background: COLORS.border,
+          border: "none",
+          borderRadius: "50%",
+          width: 18,
+          height: 18,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: COLORS.textMuted,
+          fontSize: 11
+        }
+      }, "\u2715")), /*#__PURE__*/React.createElement("select", {
+        value: salesSortBy,
+        onChange: e => setSalesSortBy(e.target.value),
+        style: {
+          flexShrink: 0,
+          padding: "9px 10px",
+          borderRadius: 10,
+          border: `1.5px solid ${COLORS.border}`,
+          background: COLORS.surface,
+          fontSize: 12,
+          fontWeight: 600,
+          color: COLORS.text,
+          fontFamily: "'Inter', sans-serif",
+          outline: "none",
+          cursor: "pointer"
+        }
+      }, /*#__PURE__*/React.createElement("option", {
+        value: "date_desc"
+      }, "\uD83D\uDCC5 Newest"), /*#__PURE__*/React.createElement("option", {
+        value: "date_asc"
+      }, "\uD83D\uDCC5 Oldest"), /*#__PURE__*/React.createElement("option", {
+        value: "amount_desc"
+      }, "\uD83D\uDCB0 High \u2192 Low"), /*#__PURE__*/React.createElement("option", {
+        value: "amount_asc"
+      }, "\uD83D\uDCB0 Low \u2192 High"), /*#__PURE__*/React.createElement("option", {
+        value: "name_asc"
+      }, "\uD83D\uDD24 A \u2192 Z"), /*#__PURE__*/React.createElement("option", {
+        value: "name_desc"
+      }, "\uD83D\uDD24 Z \u2192 A"))), search && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: COLORS.textMuted,
+          marginBottom: 8
+        }
+      }, sorted.length, " result", sorted.length !== 1 ? "s" : "", " for \"", /*#__PURE__*/React.createElement("strong", null, search), "\""), sorted.length === 0 ? /*#__PURE__*/React.createElement("div", {
+        style: {
+          textAlign: "center",
+          padding: "3rem 1rem"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 48,
+          marginBottom: 12
+        }
+      }, "\uD83D\uDED2"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 16,
+          fontWeight: 700,
+          color: COLORS.text,
+          marginBottom: 6
+        }
+      }, search ? `No results for "${search}"` : `No sales for ${periodLabel.toLowerCase()}`), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 13,
+          color: COLORS.textMuted
+        }
+      }, sales.length === 0 ? "Tap the + button to record your first sale" : "Try a different search or period")) : /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          gap: 8
+        }
+      }, sorted.map(s => /*#__PURE__*/React.createElement("div", {
+        key: s.id,
+        style: {
+          background: "#fff",
+          borderRadius: 14,
+          border: `1px solid ${COLORS.border}`,
+          padding: "12px 14px",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          boxShadow: "0 1px 3px rgba(15,23,42,0.04)"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          width: 40,
+          height: 40,
+          borderRadius: 11,
+          background: COLORS.accentLight,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 18,
+          flexShrink: 0
+        }
+      }, "\uD83D\uDECD\uFE0F"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          flex: 1,
+          minWidth: 0
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 14,
+          fontWeight: 700,
+          color: COLORS.text,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap"
+        }
+      }, s.itemName), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: COLORS.textMuted,
+          marginTop: 2,
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          alignItems: "center"
+        }
+      }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDCC5 ", s.date), /*#__PURE__*/React.createElement("span", null, "\xD7", s.qty, " @ ", NAIRA(s.price)), s.tag && /*#__PURE__*/React.createElement("span", {
+        style: {
+          background: COLORS.primaryLight,
+          color: COLORS.primary,
+          borderRadius: 6,
+          padding: "1px 7px",
+          fontWeight: 600,
+          fontSize: 10
+        }
+      }, "\uD83C\uDFF7\uFE0F ", s.tag))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 15,
+          fontWeight: 700,
+          color: COLORS.accent,
+          flexShrink: 0
+        }
+      }, NAIRA(s.total))))));
+    } catch (shopErr) {
+      console.error('ShopScreen error:', shopErr);
+      return React.createElement('div', {
+        style: {
+          padding: 20,
+          color: 'red',
+          fontSize: 13
+        }
+      }, 'Shop error: ' + shopErr.message + ' — tap to reload', React.createElement('button', {
+        onClick: () => window.location.reload(),
+        style: {
+          display: 'block',
+          marginTop: 10,
+          padding: '8px 16px',
+          background: '#2563EB',
+          color: '#fff',
+          border: 'none',
+          borderRadius: 8,
+          cursor: 'pointer'
+        }
+      }, 'Reload'));
+    }
   })(), tab === "inventory" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("button", {
     onClick: () => setInvFormOpen(v => !v),
     style: {
@@ -6251,60 +6298,7 @@ function ShopScreen({
       flex: 2
     },
     onClick: recordSale
-  }, "Record Sale")))), confirmDeleteFarm && /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "fixed",
-      inset: 0,
-      zIndex: 500,
-      background: "rgba(0,0,0,0.5)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20
-    },
-    onClick: () => setConfirmDeleteFarm(null)
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: "var(--surface)",
-      borderRadius: 20,
-      padding: 24,
-      width: "100%",
-      maxWidth: 340
-    },
-    onClick: e => e.stopPropagation()
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 18,
-      fontWeight: 800,
-      color: "var(--text)",
-      marginBottom: 8
-    }
-  }, "\uD83D\uDDD1\uFE0F Delete Farm?"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      color: "var(--text-muted)",
-      marginBottom: 20,
-      lineHeight: 1.6
-    }
-  }, "This will permanently delete the farm and all its expense records. This cannot be undone."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-outline",
-    style: {
-      flex: 1
-    },
-    onClick: () => setConfirmDeleteFarm(null)
-  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
-    className: "btn btn-danger",
-    style: {
-      flex: 1,
-      fontWeight: 800
-    },
-    onClick: () => doDeleteFarm(confirmDeleteFarm)
-  }, "Delete")))), toast && /*#__PURE__*/React.createElement(Toast, {
+  }, "Record Sale")))), toast && /*#__PURE__*/React.createElement(Toast, {
     msg: toast.msg,
     type: toast.type,
     onDone: () => setToast(null)
@@ -6330,7 +6324,8 @@ function ShopScreen({
 // ===================== FARM MODE =====================
 const FARM_CATS = ["Seeds", "Fertilizer", "Labor", "Transport", "Equipment", "Others"];
 function FarmScreen({
-  user
+  user,
+  syncTick
 }) {
   const FG = {
     dark: "#1B4332",
@@ -8012,7 +8007,8 @@ function HistoryScreen({
 const DC_TYPES = ["debt", "credit"]; // debt = I owe them | credit = they owe me
 
 function DebtCreditScreen({
-  user
+  user,
+  syncTick
 }) {
   const key = `sl_debt_${user.uid}`;
   const [records, setRecords] = useLocalState(key, []);
@@ -13071,10 +13067,10 @@ function App() {
     let lastActivity = Date.now();
     let pushTimer = null;
     let pullTimer = null;
-    const ACTIVE_PUSH = 30_000;
-    const ACTIVE_PULL = 15_000;
-    const IDLE_PUSH = 120_000;
-    const IDLE_PULL = 60_000;
+    const ACTIVE_PUSH = 60_000; // 60s — rc_data_write handles immediate push
+    const ACTIVE_PULL = 30_000; // 30s
+    const IDLE_PUSH = 180_000; // 3 min when idle
+    const IDLE_PULL = 90_000; // 90s when idle
     const IDLE_THRESH = 120_000; // 2 min
 
     const isIdle = () => Date.now() - lastActivity > IDLE_THRESH;
@@ -13085,11 +13081,11 @@ function App() {
       passive: true
     }));
     const doSync = () => {
-      if (!navigator.onLine || document.hidden) return;
+      if (!navigator.onLine) return;
       AuthAPI.syncToServer(uid).catch(() => {});
     };
     const doPull = () => {
-      if (!navigator.onLine || document.hidden) return;
+      if (!navigator.onLine) return;
       AuthAPI.syncFromServer(uid).catch(() => {});
     };
     const schedulePush = () => {
@@ -13144,10 +13140,7 @@ function App() {
     const handleDataWrite = () => {
       if (!navigator.onLine) return;
       clearTimeout(writeTimer);
-      writeTimer = setTimeout(() => {
-        doSync();
-        setTimeout(doPull, 2000);
-      }, 1500);
+      writeTimer = setTimeout(doSync, 500); // push 500ms after data entry
     };
     window.addEventListener("rc_data_write", handleDataWrite);
 
@@ -13168,7 +13161,7 @@ function App() {
       clearTimeout(writeTimer);
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("rc_sync_update", handleSyncUpdate);
-      window.removeEventListener("rc_data_write", handleDataWrite);
+      // rc_data_write cleanup not needed
       document.removeEventListener("visibilitychange", handleVisibility);
       ["click", "keydown", "touchstart", "scroll"].forEach(ev => window.removeEventListener(ev, markActive));
     };
@@ -13432,7 +13425,10 @@ function App() {
     // Pull data from server on every login — primary sync trigger on new device
     const authUid = fullUser.uid || fullUser._id;
     if (navigator.onLine) {
-      localStorage.removeItem("rc_last_sync"); // force fresh pull
+      // Set provisional last_sync so push guard passes for existing data
+      if (!localStorage.getItem("rc_last_sync")) {
+        localStorage.setItem("rc_last_sync", "login-" + Date.now());
+      }
       setTimeout(() => AuthAPI.syncFromServer(authUid).catch(() => {}), 800);
     }
   };
@@ -14732,7 +14728,6 @@ function App() {
   })())), /*#__PURE__*/React.createElement("div", {
     className: "main"
   }, navTab === "home" && /*#__PURE__*/React.createElement(HomeScreen, {
-    key: syncTick,
     user: user,
     sector: sector,
     onSetSector: s => {
@@ -14743,21 +14738,16 @@ function App() {
     onViewOverview: () => setNavTab("history"),
     onViewDebt: () => setNavTab("debtcredit")
   }), navTab === "sector" && sector === "sales" && /*#__PURE__*/React.createElement(SalesRepScreen, {
-    key: `sales-${syncTick}`,
     user: user
   }), navTab === "sector" && sector === "shop" && /*#__PURE__*/React.createElement(ShopScreen, {
-    key: `shop-${syncTick}`,
     user: user
   }), navTab === "sector" && sector === "farm" && /*#__PURE__*/React.createElement(FarmScreen, {
-    key: `farm-${syncTick}`,
     user: user
   }), navTab === "history" && /*#__PURE__*/React.createElement(HistoryScreen, {
-    key: `hist-${syncTick}`,
     user: user
   }), navTab === "synclog" && /*#__PURE__*/React.createElement(SyncHistoryScreen, {
     user: user
   }), navTab === "debtcredit" && /*#__PURE__*/React.createElement(DebtCreditScreen, {
-    key: `debt-${syncTick}`,
     user: user
   }), navTab === "notifications" && /*#__PURE__*/React.createElement(NotificationsScreen, {
     user: user,

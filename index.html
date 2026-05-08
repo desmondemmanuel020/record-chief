@@ -40,24 +40,20 @@
   </div>
   <div id="root"></div>
 
-  <!-- Single self-contained bundle: React 18 + ReactDOM 18 + App -->
   <script src="bundle.js"></script>
 
   <script>
+    // Dismiss splash
     var s = document.getElementById('splash');
-    if (s) { s.classList.add('done'); setTimeout(function(){ if(s&&s.parentNode)s.parentNode.removeChild(s); },700); }
+    if (s) { s.classList.add('done'); setTimeout(function(){ if(s&&s.parentNode)s.parentNode.removeChild(s); }, 700); }
+
+    // Register service worker — NO auto-reload on update (prevents refresh loop)
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').then(function(reg){
-        setInterval(function(){reg.update();},30000);
-        reg.addEventListener('updatefound',function(){
-          var w=reg.installing; if(!w) return;
-          w.addEventListener('statechange',function(){
-            if(w.state==='installed'&&navigator.serviceWorker.controller) w.postMessage({type:'SKIP_WAITING'});
-          });
-        });
+        // Only check for updates every 5 minutes
+        setInterval(function(){ reg.update(); }, 5 * 60 * 1000);
+        // Don't trigger reload on SW update — user will get it on next open
       }).catch(function(){});
-      var r=false;
-      navigator.serviceWorker.addEventListener('controllerchange',function(){if(!r){r=true;window.location.reload();}});
     }
   </script>
 </body>
